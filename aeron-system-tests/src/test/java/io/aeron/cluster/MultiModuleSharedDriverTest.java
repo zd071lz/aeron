@@ -44,15 +44,15 @@ import java.io.File;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 @ExtendWith(InterruptingTestCallback.class)
-public class MultiModuleSharedDriverTest
+class MultiModuleSharedDriverTest
 {
     @RegisterExtension
-    public final SystemTestWatcher systemTestWatcher = new SystemTestWatcher();
+    final SystemTestWatcher systemTestWatcher = new SystemTestWatcher();
 
     @Test
     @InterruptAfter(20)
     @SuppressWarnings({ "try", "methodlength"})
-    public void shouldSupportTwoSingleNodeClusters()
+    void shouldSupportTwoSingleNodeClusters()
     {
         final MediaDriver.Context driverCtx = new MediaDriver.Context()
             .threadingMode(ThreadingMode.SHARED)
@@ -60,7 +60,7 @@ public class MultiModuleSharedDriverTest
             .dirDeleteOnShutdown(false)
             .dirDeleteOnStart(true);
 
-        final Archive.Context archiveCtx = new Archive.Context()
+        final Archive.Context archiveCtx = TestContexts.localhostArchive()
             .threadingMode(ArchiveThreadingMode.SHARED)
             .archiveDir(new File(SystemUtil.tmpDirName(), "archive"))
             .recordingEventsEnabled(false)
@@ -68,7 +68,7 @@ public class MultiModuleSharedDriverTest
 
         try (ArchivingMediaDriver ignore = ArchivingMediaDriver.launch(driverCtx, archiveCtx))
         {
-            final ConsensusModule.Context moduleCtx0 = new ConsensusModule.Context()
+            final ConsensusModule.Context moduleCtx0 = TestContexts.localhostConsensusModule()
                 .clusterId(0)
                 .deleteDirOnStart(true)
                 .clusterDir(new File(SystemUtil.tmpDirName(), "cluster-0-0"))
@@ -86,7 +86,7 @@ public class MultiModuleSharedDriverTest
                 .serviceStreamId(moduleCtx0.serviceStreamId())
                 .consensusModuleStreamId(moduleCtx0.consensusModuleStreamId());
 
-            final ConsensusModule.Context moduleCtx1 = new ConsensusModule.Context()
+            final ConsensusModule.Context moduleCtx1 = TestContexts.localhostConsensusModule()
                 .clusterId(1)
                 .deleteDirOnStart(true)
                 .clusterDir(new File(SystemUtil.tmpDirName(), "cluster-0-1"))
@@ -152,7 +152,7 @@ public class MultiModuleSharedDriverTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldSupportTwoMultiNodeClusters()
+    void shouldSupportTwoMultiNodeClusters()
     {
         try (MultiClusterNode node0 = new MultiClusterNode(0, systemTestWatcher.dataCollector());
             MultiClusterNode node1 = new MultiClusterNode(1, systemTestWatcher.dataCollector()))
@@ -184,9 +184,9 @@ public class MultiModuleSharedDriverTest
     private void echoMessage(final AeronCluster client, final String message, final MutableReference<String> egress)
     {
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
-        final int length = buffer.putStringWithoutLengthAscii(0, message);
+        final int messageLength = buffer.putStringWithoutLengthAscii(0, message);
 
-        while (client.offer(buffer, 0, length) < 0)
+        while (client.offer(buffer, 0, messageLength) < 0)
         {
             Tests.yield();
         }
@@ -244,7 +244,7 @@ public class MultiModuleSharedDriverTest
                 .nameResolver(new RedirectingNameResolver(TestCluster.DEFAULT_NODE_MAPPINGS))
                 .dirDeleteOnStart(true);
 
-            final Archive.Context archiveCtx = new Archive.Context()
+            final Archive.Context archiveCtx = TestContexts.localhostArchive()
                 .threadingMode(ArchiveThreadingMode.SHARED)
                 .archiveDir(new File(SystemUtil.tmpDirName(), "archive-" + nodeId))
                 .controlChannel("aeron:udp?endpoint=localhost:801" + nodeId)

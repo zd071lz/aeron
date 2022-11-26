@@ -774,6 +774,20 @@ const char *aeron_driver_context_get_name_resolver_init_args(aeron_driver_contex
 int aeron_driver_context_set_re_resolution_check_interval_ns(aeron_driver_context_t *context, uint64_t value);
 uint64_t aeron_driver_context_get_re_resolution_check_interval_ns(aeron_driver_context_t *context);
 
+typedef struct aeron_duty_cycle_tracker_stct aeron_duty_cycle_tracker_t;
+
+int aeron_driver_context_set_conductor_duty_cycle_tracker(
+    aeron_driver_context_t *context, aeron_duty_cycle_tracker_t *value);
+aeron_duty_cycle_tracker_t *aeron_driver_context_get_conductor_duty_cycle_tracker(aeron_driver_context_t *context);
+
+int aeron_driver_context_set_sender_duty_cycle_tracker(
+    aeron_driver_context_t *context, aeron_duty_cycle_tracker_t *value);
+aeron_duty_cycle_tracker_t *aeron_driver_context_get_sender_duty_cycle_tracker(aeron_driver_context_t *context);
+
+int aeron_driver_context_set_receiver_duty_cycle_tracker(
+    aeron_driver_context_t *context, aeron_duty_cycle_tracker_t *value);
+aeron_duty_cycle_tracker_t *aeron_driver_context_get_receiver_duty_cycle_tracker(aeron_driver_context_t *context);
+
 /**
  * Specify the duty cycle time threshold for the conductor.
  */
@@ -781,6 +795,22 @@ uint64_t aeron_driver_context_get_re_resolution_check_interval_ns(aeron_driver_c
 
 int64_t aeron_driver_context_set_conductor_cycle_threshold_ns(aeron_driver_context_t *context, uint64_t value);
 int64_t aeron_driver_context_get_conductor_cycle_threshold_ns(aeron_driver_context_t *context);
+
+/**
+ * Specify the duty cycle time threshold for the sender.
+ */
+#define AERON_DRIVER_SENDER_CYCLE_THRESHOLD_ENV_VAR "AERON_DRIVER_SENDER_CYCLE_THRESHOLD"
+
+int64_t aeron_driver_context_set_sender_cycle_threshold_ns(aeron_driver_context_t *context, uint64_t value);
+int64_t aeron_driver_context_get_sender_cycle_threshold_ns(aeron_driver_context_t *context);
+
+/**
+ * Specify the duty cycle time threshold for the receiver.
+ */
+#define AERON_DRIVER_RECEIVER_CYCLE_THRESHOLD_ENV_VAR "AERON_DRIVER_RECEIVER_CYCLE_THRESHOLD"
+
+int64_t aeron_driver_context_set_receiver_cycle_threshold_ns(aeron_driver_context_t *context, uint64_t value);
+int64_t aeron_driver_context_get_receiver_cycle_threshold_ns(aeron_driver_context_t *context);
 
 #define AERON_RECEIVER_IO_VECTOR_CAPACITY_ENV_VAR "AERON_RECEIVER_IO_VECTOR_CAPACITY"
 int aeron_driver_context_set_receiver_io_vector_capacity(aeron_driver_context_t *context, uint32_t value);
@@ -808,28 +838,28 @@ uint32_t aeron_driver_context_get_network_publication_max_messages_per_send(aero
  *
  * @return full version and build string.
  */
-const char *aeron_version_full();
+const char *aeron_version_full(void);
 
 /**
  * Return major version number.
  *
  * @return major version number.
  */
-int aeron_version_major();
+int aeron_version_major(void);
 
 /**
  * Return minor version number.
  *
  * @return minor version number.
  */
-int aeron_version_minor();
+int aeron_version_minor(void);
 
 /**
  * Return patch version number.
  *
  * @return patch version number.
  */
-int aeron_version_patch();
+int aeron_version_patch(void);
 
 /**
  * Create a aeron_driver_context_t struct and initialize with default values.
@@ -905,21 +935,21 @@ int aeron_delete_directory(const char *dirname);
 /**
  * Clock function used by aeron.
  */
-typedef int64_t (*aeron_clock_func_t)();
+typedef int64_t (*aeron_clock_func_t)(void);
 
 /**
  * Return time in nanoseconds for machine. Is not wall clock time.
  *
  * @return nanoseconds since epoch for machine.
  */
-int64_t aeron_nano_clock();
+int64_t aeron_nano_clock(void);
 
 /**
  * Return time in milliseconds since epoch. Is wall clock time.
  *
  * @return milliseconds since epoch.
  */
-int64_t aeron_epoch_clock();
+int64_t aeron_epoch_clock(void);
 
 /**
  * Function to return logging information.
@@ -978,14 +1008,14 @@ int aeron_properties_load(const char *url_or_filename);
  *
  * @return aeron error code for calling thread.
  */
-int aeron_errcode();
+int aeron_errcode(void);
 
 /**
  * Return the current aeron error message for calling thread.
  *
  * @return aeron error message for calling thread.
  */
-const char *aeron_errmsg();
+const char *aeron_errmsg(void);
 
 /**
  * Get the default path used by the Aeron media driver.

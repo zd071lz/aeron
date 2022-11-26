@@ -74,7 +74,7 @@ typedef struct aeron_ipc_publication_stct
     aeron_raw_log_free_func_t raw_log_free_func;
     aeron_untethered_subscription_state_change_func_t untethered_subscription_state_change_func;
 
-    int64_t *unblocked_publications_counter;
+    volatile int64_t *unblocked_publications_counter;
 }
 aeron_ipc_publication_t;
 
@@ -109,13 +109,13 @@ void aeron_ipc_publication_decref(void *clientd);
 void aeron_ipc_publication_check_for_blocked_publisher(
     aeron_ipc_publication_t *publication, int64_t producer_position, int64_t now_ns);
 
-inline void aeron_ipc_publication_add_subscriber_hook(void *clientd, int64_t *value_addr)
+inline void aeron_ipc_publication_add_subscriber_hook(void *clientd, volatile int64_t *value_addr)
 {
     aeron_ipc_publication_t *publication = (aeron_ipc_publication_t *)clientd;
     AERON_PUT_ORDERED(publication->log_meta_data->is_connected, 1);
 }
 
-inline void aeron_ipc_publication_remove_subscriber_hook(void *clientd, int64_t *value_addr)
+inline void aeron_ipc_publication_remove_subscriber_hook(void *clientd, volatile int64_t *value_addr)
 {
     aeron_ipc_publication_t *publication = (aeron_ipc_publication_t *)clientd;
 

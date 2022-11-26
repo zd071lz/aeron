@@ -18,6 +18,8 @@ package io.aeron.samples.raw;
 import io.aeron.driver.Configuration;
 import org.HdrHistogram.Histogram;
 import org.agrona.BitUtil;
+import org.agrona.SystemUtil;
+import org.agrona.concurrent.HighResolutionTimer;
 import org.agrona.concurrent.SigInt;
 import org.agrona.hints.ThreadHints;
 
@@ -58,6 +60,11 @@ public class SendReceiveUdpPing
             remoteHost = args[1];
         }
 
+        if (SystemUtil.isWindows())
+        {
+            HighResolutionTimer.enable();
+        }
+
         System.out.printf("Number of channels: %d, Remote host: %s%n", numChannels, remoteHost);
 
         final Histogram histogram = new Histogram(TimeUnit.SECONDS.toNanos(10), 3);
@@ -84,7 +91,7 @@ public class SendReceiveUdpPing
 
             histogram.reset();
             System.gc();
-            LockSupport.parkNanos(1_000_000_000);
+            LockSupport.parkNanos(1_000_000_000L);
         }
     }
 
@@ -129,12 +136,14 @@ public class SendReceiveUdpPing
             }
 
             final long receivedSequenceNumber = buffer.getLong(0);
+            final long receivedTimestamp = buffer.getLong(BitUtil.SIZE_OF_LONG);
+
             if (receivedSequenceNumber != sequenceNumber)
             {
-                throw new IllegalStateException("Data Loss:" + sequenceNumber + " to " + receivedSequenceNumber);
+                throw new IllegalStateException("Data Loss: " + sequenceNumber + " to " + receivedSequenceNumber);
             }
 
-            final long durationNs = System.nanoTime() - buffer.getLong(BitUtil.SIZE_OF_LONG);
+            final long durationNs = System.nanoTime() - receivedTimestamp;
             histogram.recordValue(durationNs);
         }
 

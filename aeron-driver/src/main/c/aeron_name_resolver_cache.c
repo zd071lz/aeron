@@ -67,7 +67,7 @@ int aeron_name_resolver_cache_add_or_update(
     size_t name_length,
     aeron_name_resolver_cache_addr_t *cache_addr,
     int64_t time_of_last_activity_ms,
-    int64_t *cache_entries_counter)
+    volatile int64_t *cache_entries_counter)
 {
     int index = aeron_name_resolver_cache_find_index_by_name_and_type(cache, name, name_length, cache_addr->res_type);
     aeron_name_resolver_cache_entry_t *entry;
@@ -134,7 +134,7 @@ int aeron_name_resolver_cache_lookup_by_name(
 }
 
 int aeron_name_resolver_cache_timeout_old_entries(
-    aeron_name_resolver_cache_t *cache, int64_t now_ms, int64_t *cache_entries_counter)
+    aeron_name_resolver_cache_t *cache, int64_t now_ms, volatile int64_t *cache_entries_counter)
 {
     int num_removed = 0;
     for (int last_index = (int)cache->entries.length - 1, i = last_index; i >= 0; i--)

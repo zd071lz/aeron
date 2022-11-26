@@ -19,6 +19,7 @@ import io.aeron.CommonContext;
 import io.aeron.driver.buffer.RawLog;
 import io.aeron.driver.media.SendChannelEndpoint;
 import io.aeron.driver.status.SystemCounters;
+import io.aeron.logbuffer.FrameDescriptor;
 import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.logbuffer.LogBufferUnblocker;
 import io.aeron.protocol.DataHeaderFlyweight;
@@ -46,6 +47,7 @@ import static io.aeron.logbuffer.LogBufferDescriptor.*;
 import static io.aeron.logbuffer.TermScanner.*;
 import static io.aeron.protocol.DataHeaderFlyweight.BEGIN_AND_END_FLAGS;
 import static io.aeron.protocol.DataHeaderFlyweight.BEGIN_END_AND_EOS_FLAGS;
+import static io.aeron.protocol.StatusMessageFlyweight.END_OF_STREAM_FLAG;
 import static org.agrona.BitUtil.SIZE_OF_LONG;
 
 class NetworkPublicationPadding1
@@ -131,6 +133,7 @@ public final class NetworkPublication
     private volatile boolean isConnected;
     private volatile boolean isEndOfStream;
     private volatile boolean hasSenderReleased;
+    private volatile boolean hasReceivedSmEos;
     private State state = State.ACTIVE;
 
     private final UnsafeBuffer[] termBuffers;
@@ -271,6 +274,7 @@ public final class NetworkPublication
             }
         }
 
+        CloseHelper.close(flowControl);
         CloseHelper.close(errorHandler, rawLog);
     }
 
@@ -407,6 +411,13 @@ public final class NetworkPublication
             hasInitialConnection = true;
         }
 
+        if (!channelEndpoint.udpChannel().isMulticast() &&
+            !channelEndpoint.udpChannel().isMultiDestination() &&
+            END_OF_STREAM_FLAG == (msg.flags() & END_OF_STREAM_FLAG))
+        {
+            hasReceivedSmEos = true;
+        }
+
         final long timeNs = cachedNanoClock.nanoTime();
         timeOfLastStatusMessageNs = timeNs;
 
@@ -461,7 +472,8 @@ public final class NetworkPublication
     {
         final long senderPosition = this.senderPosition.get();
         final long resendPosition = computePosition(termId, termOffset, positionBitsToShift, initialTermId);
-        final long bottomResendWindow = senderPosition - (termBufferLength >> 1);
+        final long bottomResendWindow =
+            senderPosition - (termBufferLength >> 1) - FrameDescriptor.computeMaxMessageLength(termBufferLength);
 
         if (bottomResendWindow <= resendPosition && resendPosition < senderPosition)
         {
@@ -711,6 +723,11 @@ public final class NetworkPublication
                 .mtuLength(mtuLength)
                 .ttl(channelEndpoint.multicastTtl());
 
+            if (isSetupElicited)
+            {
+                flowControl.onSetup(setupHeader, senderLimit.get(), senderPosition.get(), positionBitsToShift, nowNs);
+            }
+
             if (SetupFlyweight.HEADER_LENGTH != channelEndpoint.send(setupBuffer))
             {
                 shortSends.increment();
@@ -952,7 +969,7 @@ public final class NetworkPublication
             }
 
             case LINGER:
-                if ((timeOfLastActivityNs + lingerTimeoutNs) - timeNs < 0)
+                if (hasReceivedSmEos || (timeOfLastActivityNs + lingerTimeoutNs) - timeNs < 0)
                 {
                     channelEndpoint.decRef();
                     conductor.cleanupPublication(this);

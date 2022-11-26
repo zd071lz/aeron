@@ -38,6 +38,8 @@ import static io.aeron.CommonContext.*;
  * range and this will be added to the replay channel for instructing the archive.
  * <p>
  * NOTE: Merging is only supported with UDP streams.
+ * <p>
+ * NOTE: ReplayMerge is not threadsafe and should <b>not</b> be used with a shared {@link AeronArchive} client.
  */
 public final class ReplayMerge implements AutoCloseable
 {
@@ -79,7 +81,6 @@ public final class ReplayMerge implements AutoCloseable
     private final EpochClock epochClock;
     private final String replayDestination;
     private final String liveDestination;
-    private final String replayEndpoint;
     private final ChannelUri replayChannelUri;
 
     /**
@@ -134,7 +135,7 @@ public final class ReplayMerge implements AutoCloseable
         replayChannelUri.put(CommonContext.LINGER_PARAM_NAME, "0");
         replayChannelUri.put(CommonContext.EOS_PARAM_NAME, "false");
 
-        replayEndpoint = ChannelUri.parse(replayDestination).get(ENDPOINT_PARAM_NAME);
+        final String replayEndpoint = ChannelUri.parse(replayDestination).get(ENDPOINT_PARAM_NAME);
         if (replayEndpoint.endsWith(":0"))
         {
             state = State.RESOLVE_REPLAY_PORT;
@@ -329,9 +330,7 @@ public final class ReplayMerge implements AutoCloseable
         final String resolvedEndpoint = subscription.resolvedEndpoint();
         if (null != resolvedEndpoint)
         {
-            final int i = resolvedEndpoint.lastIndexOf(':');
-            replayChannelUri.put(CommonContext.ENDPOINT_PARAM_NAME,
-                replayEndpoint.substring(0, replayEndpoint.length() - 2) + resolvedEndpoint.substring(i));
+            replayChannelUri.replaceEndpointWildcardPort(resolvedEndpoint);
 
             timeOfLastProgressMs = nowMs;
             state(State.GET_RECORDING_POSITION);

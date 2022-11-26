@@ -51,14 +51,15 @@ class ClusterEventDissectorTest
         buffer.putInt(LOG_HEADER_LENGTH + (SIZE_OF_LONG * 9), 13, LITTLE_ENDIAN);
         buffer.putInt(LOG_HEADER_LENGTH + (SIZE_OF_LONG * 9) + SIZE_OF_INT, 100, LITTLE_ENDIAN);
         buffer.putInt(LOG_HEADER_LENGTH + (SIZE_OF_LONG * 9) + SIZE_OF_INT * 2, 200, LITTLE_ENDIAN);
-        buffer.putByte(LOG_HEADER_LENGTH + (SIZE_OF_LONG * 9) + SIZE_OF_INT * 3, (byte)1);
+        buffer.putInt(LOG_HEADER_LENGTH + (SIZE_OF_LONG * 9) + SIZE_OF_INT * 3, 300, LITTLE_ENDIAN);
+        buffer.putByte(LOG_HEADER_LENGTH + (SIZE_OF_LONG * 9) + SIZE_OF_INT * 4, (byte)1);
 
         ClusterEventDissector.dissectNewLeadershipTerm(buffer, 0, builder);
 
-        assertEquals("[33.0] " + CONTEXT + ": " + NEW_LEADERSHIP_TERM.name() + " [8/9]: memberId=13 " +
+        assertEquals("[33.000000] " + CONTEXT + ": " + NEW_LEADERSHIP_TERM.name() + " [8/9]: memberId=13 " +
             "logLeadershipTermId=1 nextLeadershipTermId=2 nextTermBaseLogPosition=3 nextLogPosition=13 " +
             "leadershipTermId=23 termBaseLogPosition=4 logPosition=5 leaderRecordingId=6 " +
-            "timestamp=7 leaderId=100 logSessionId=200 isStartup=true",
+            "timestamp=7 leaderId=100 logSessionId=200 appVersion=0.1.44 isStartup=true",
             builder.toString());
     }
 
@@ -72,7 +73,7 @@ class ClusterEventDissectorTest
 
         ClusterEventDissector.dissectStateChange(code, buffer, 0, builder);
 
-        assertEquals("[-1.0] " + CONTEXT + ": " + code.name() + " [100/200]: memberId=42 a -> b",
+        assertEquals("[-1.000000] " + CONTEXT + ": " + code.name() + " [100/200]: memberId=42 a -> b",
             builder.toString());
     }
 
@@ -82,10 +83,6 @@ class ClusterEventDissectorTest
         final int offset = 10;
         int writeIndex = offset;
         writeIndex += internalEncodeLogHeader(buffer, offset, 100, 200, () -> 5_000_000_000L);
-        buffer.putInt(writeIndex, 86, LITTLE_ENDIAN);
-        writeIndex += SIZE_OF_INT;
-        buffer.putInt(writeIndex, 3, LITTLE_ENDIAN);
-        writeIndex += SIZE_OF_INT;
         buffer.putLong(writeIndex, 101010, LITTLE_ENDIAN);
         writeIndex += SIZE_OF_LONG;
         buffer.putLong(writeIndex, 6, LITTLE_ENDIAN);
@@ -98,11 +95,15 @@ class ClusterEventDissectorTest
         writeIndex += SIZE_OF_LONG;
         buffer.putLong(writeIndex, 800, LITTLE_ENDIAN);
         writeIndex += SIZE_OF_LONG;
+        buffer.putInt(writeIndex, 86, LITTLE_ENDIAN);
+        writeIndex += SIZE_OF_INT;
+        buffer.putInt(writeIndex, 3, LITTLE_ENDIAN);
+        writeIndex += SIZE_OF_INT;
         buffer.putStringAscii(writeIndex, "old -> new");
 
         ClusterEventDissector.dissectElectionStateChange(buffer, offset, builder);
 
-        assertEquals("[5.0] " + CONTEXT + ": " + ELECTION_STATE_CHANGE.name() + " [100/200]: memberId=86" +
+        assertEquals("[5.000000] " + CONTEXT + ": " + ELECTION_STATE_CHANGE.name() + " [100/200]: memberId=86" +
             " old -> new leaderId=3 candidateTermId=101010 leadershipTermId=6 logPosition=1024 logLeadershipTermId=2" +
             " appendPosition=1218 catchupPosition=800",
             builder.toString());
@@ -114,8 +115,6 @@ class ClusterEventDissectorTest
         final int offset = 10;
         int writeIndex = offset;
         writeIndex += internalEncodeLogHeader(buffer, offset, 100, 200, () -> 5_000_000_000L);
-        buffer.putInt(writeIndex, 123, LITTLE_ENDIAN);
-        writeIndex += SIZE_OF_INT;
         buffer.putLong(writeIndex, 555, LITTLE_ENDIAN);
         writeIndex += SIZE_OF_LONG;
         buffer.putLong(writeIndex, 166, LITTLE_ENDIAN);
@@ -132,11 +131,13 @@ class ClusterEventDissectorTest
         writeIndex += SIZE_OF_LONG;
         buffer.putLong(writeIndex, 800, LITTLE_ENDIAN);
         writeIndex += SIZE_OF_LONG;
+        buffer.putInt(writeIndex, 123, LITTLE_ENDIAN);
+        writeIndex += SIZE_OF_INT;
         buffer.putStringAscii(writeIndex, "election state", LITTLE_ENDIAN);
 
         ClusterEventDissector.dissectTruncateLogEntry(TRUNCATE_LOG_ENTRY, buffer, offset, builder);
 
-        assertEquals("[5.0] " + CONTEXT + ": " + TRUNCATE_LOG_ENTRY.name() + " [100/200]: memberId=123 " +
+        assertEquals("[5.000000] " + CONTEXT + ": " + TRUNCATE_LOG_ENTRY.name() + " [100/200]: memberId=123 " +
             "state=election state logLeadershipTermId=555 leadershipTermId=166 candidateTermId=42 " +
             "commitPosition=1024 logPosition=998 appendPosition=1024 oldPosition=1200 newPosition=800",
             builder.toString());

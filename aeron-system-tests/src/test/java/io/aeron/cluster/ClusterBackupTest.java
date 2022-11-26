@@ -16,40 +16,41 @@
 package io.aeron.cluster;
 
 import io.aeron.cluster.client.AeronCluster;
+import io.aeron.samples.archive.SampleAuthenticator;
+import io.aeron.security.AuthenticatorSupplier;
 import io.aeron.test.InterruptAfter;
 import io.aeron.test.InterruptingTestCallback;
 import io.aeron.test.SlowTest;
 import io.aeron.test.SystemTestWatcher;
+import io.aeron.test.Tests;
 import io.aeron.test.cluster.TestBackupNode;
 import io.aeron.test.cluster.TestCluster;
 import io.aeron.test.cluster.TestNode;
-import org.junit.jupiter.api.BeforeEach;
+import org.agrona.collections.MutableBoolean;
+import org.agrona.concurrent.AtomicBuffer;
+import org.agrona.concurrent.errors.ErrorLogReader;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
-import static io.aeron.test.cluster.TestCluster.aCluster;
+import static io.aeron.test.SystemTestWatcher.UNKNOWN_HOST_FILTER;
+import static io.aeron.test.cluster.TestCluster.*;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.junit.jupiter.api.Assertions.*;
 
 @SlowTest
 @ExtendWith(InterruptingTestCallback.class)
-public class ClusterBackupTest
+class ClusterBackupTest
 {
     @RegisterExtension
     final SystemTestWatcher systemTestWatcher = new SystemTestWatcher();
 
-    @BeforeEach
-    void setUp()
-    {
-        systemTestWatcher.ignoreErrorsMatching(
-            (s) -> s.contains("ats_gcm_decrypt final_ex: error:00000000:lib(0):func(0):reason(0)"));
-    }
-
     @Test
     @InterruptAfter(30)
-    public void shouldBackupClusterNoSnapshotsAndEmptyLog()
+    void shouldBackupClusterNoSnapshotsAndEmptyLog()
     {
         final TestCluster cluster = aCluster().withStaticNodes(3).start();
         systemTestWatcher.cluster(cluster);
@@ -68,9 +69,10 @@ public class ClusterBackupTest
         assertFalse(node.service().wasSnapshotLoaded());
     }
 
-    @Test
     @InterruptAfter(30)
-    public void shouldBackupClusterNoSnapshotsAndNonEmptyLog()
+    @ParameterizedTest()
+    @EnumSource(value = ClusterBackup.SourceType.class)
+    void shouldBackupClusterNoSnapshotsAndNonEmptyLog(final ClusterBackup.SourceType sourceType)
     {
         final TestCluster cluster = aCluster().withStaticNodes(3).start();
         systemTestWatcher.cluster(cluster);
@@ -79,13 +81,11 @@ public class ClusterBackupTest
 
         final int messageCount = 10;
         cluster.connectClient();
-        cluster.sendMessages(messageCount);
-        cluster.awaitResponseMessageCount(messageCount);
-        cluster.awaitServicesMessageCount(messageCount);
+        cluster.sendAndAwaitMessages(messageCount);
 
         final long logPosition = leader.service().cluster().logPosition();
 
-        cluster.startClusterBackupNode(true);
+        cluster.startClusterBackupNode(true, sourceType);
 
         cluster.awaitBackupState(ClusterBackup.State.BACKING_UP);
         cluster.awaitBackupLiveLogPosition(logPosition);
@@ -100,7 +100,7 @@ public class ClusterBackupTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldBackupClusterNoSnapshotsAndThenSendMessages()
+    void shouldBackupClusterNoSnapshotsAndThenSendMessages()
     {
         final TestCluster cluster = aCluster().withStaticNodes(3).start();
         systemTestWatcher.cluster(cluster);
@@ -112,9 +112,7 @@ public class ClusterBackupTest
 
         final int messageCount = 10;
         cluster.connectClient();
-        cluster.sendMessages(messageCount);
-        cluster.awaitResponseMessageCount(messageCount);
-        cluster.awaitServicesMessageCount(messageCount);
+        cluster.sendAndAwaitMessages(messageCount);
 
         final long logPosition = leader.service().cluster().logPosition();
 
@@ -130,7 +128,7 @@ public class ClusterBackupTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldBackupClusterWithSnapshot()
+    void shouldBackupClusterWithSnapshot()
     {
         final TestCluster cluster = aCluster().withStaticNodes(3).start();
         systemTestWatcher.cluster(cluster);
@@ -139,9 +137,7 @@ public class ClusterBackupTest
 
         final int messageCount = 10;
         cluster.connectClient();
-        cluster.sendMessages(messageCount);
-        cluster.awaitResponseMessageCount(messageCount);
-        cluster.awaitServicesMessageCount(messageCount);
+        cluster.sendAndAwaitMessages(messageCount);
 
         cluster.takeSnapshot(leader);
         cluster.awaitSnapshotCount(1);
@@ -163,7 +159,7 @@ public class ClusterBackupTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldBackupClusterAfterCleanShutdown()
+    void shouldBackupClusterAfterCleanShutdown()
     {
         final TestCluster cluster = aCluster().withStaticNodes(3).start();
         systemTestWatcher.cluster(cluster);
@@ -172,9 +168,7 @@ public class ClusterBackupTest
 
         final int messageCount = 10;
         cluster.connectClient();
-        cluster.sendMessages(messageCount);
-        cluster.awaitResponseMessageCount(messageCount);
-        cluster.awaitServicesMessageCount(messageCount);
+        cluster.sendAndAwaitMessages(messageCount);
 
         cluster.node(0).isTerminationExpected(true);
         cluster.node(1).isTerminationExpected(true);
@@ -200,7 +194,7 @@ public class ClusterBackupTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldBackupClusterWithSnapshotAndNonEmptyLog()
+    void shouldBackupClusterWithSnapshotAndNonEmptyLog()
     {
         final TestCluster cluster = aCluster().withStaticNodes(3).start();
         systemTestWatcher.cluster(cluster);
@@ -211,9 +205,7 @@ public class ClusterBackupTest
         final int postSnapshotMessageCount = 7;
         final int totalMessageCount = preSnapshotMessageCount + postSnapshotMessageCount;
         cluster.connectClient();
-        cluster.sendMessages(preSnapshotMessageCount);
-        cluster.awaitResponseMessageCount(preSnapshotMessageCount);
-        cluster.awaitServicesMessageCount(preSnapshotMessageCount);
+        cluster.sendAndAwaitMessages(preSnapshotMessageCount);
 
         cluster.takeSnapshot(leader);
         cluster.awaitSnapshotCount(1);
@@ -240,7 +232,136 @@ public class ClusterBackupTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldBackupClusterWithSnapshotThenSend()
+    void shouldBackupClusterWithSnapshotAndNonEmptyLogWithSimpleAuthentication()
+    {
+        final AuthenticatorSupplier authenticatorSupplier = SampleAuthenticator::new;
+
+        final TestCluster cluster = aCluster()
+            .withStaticNodes(3)
+            .withAuthenticationSupplier(authenticatorSupplier)
+            .start();
+        systemTestWatcher.cluster(cluster);
+
+        final TestNode leader = cluster.awaitLeader();
+
+        final int preSnapshotMessageCount = 10;
+        final int postSnapshotMessageCount = 7;
+        final int totalMessageCount = preSnapshotMessageCount + postSnapshotMessageCount;
+
+        cluster.connectClient(TestCluster.SIMPLE_CREDENTIALS_SUPPLIER);
+        cluster.sendAndAwaitMessages(preSnapshotMessageCount);
+
+        cluster.takeSnapshot(leader);
+        cluster.awaitSnapshotCount(1);
+
+        cluster.sendMessages(postSnapshotMessageCount);
+        cluster.awaitResponseMessageCount(totalMessageCount);
+        cluster.awaitServiceMessageCount(leader, totalMessageCount);
+
+        final long logPosition = leader.service().cluster().logPosition();
+
+        cluster.startClusterBackupNode(true, TestCluster.SIMPLE_CREDENTIALS_SUPPLIER);
+
+        cluster.awaitBackupState(ClusterBackup.State.BACKING_UP);
+        cluster.awaitBackupLiveLogPosition(logPosition);
+        cluster.stopAllNodes();
+
+        final TestNode node = cluster.startStaticNodeFromBackup();
+        cluster.awaitLeader();
+        cluster.awaitServiceMessageCount(node, totalMessageCount);
+
+        assertEquals(totalMessageCount, node.service().messageCount());
+        assertTrue(node.service().wasSnapshotLoaded());
+    }
+
+    @Test
+    @InterruptAfter(30)
+    void shouldBackupClusterWithSnapshotAndNonEmptyLogWithChallengeResponseAuthentication()
+    {
+        final AuthenticatorSupplier authenticatorSupplier = SampleAuthenticator::new;
+
+        final TestCluster cluster = aCluster()
+            .withStaticNodes(3)
+            .withAuthenticationSupplier(authenticatorSupplier)
+            .start();
+        systemTestWatcher.cluster(cluster);
+
+        final TestNode leader = cluster.awaitLeader();
+
+        final int preSnapshotMessageCount = 10;
+        final int postSnapshotMessageCount = 7;
+        final int totalMessageCount = preSnapshotMessageCount + postSnapshotMessageCount;
+
+        cluster.connectClient(TestCluster.CHALLENGE_RESPONSE_CREDENTIALS_SUPPLIER);
+        cluster.sendAndAwaitMessages(preSnapshotMessageCount);
+
+        cluster.takeSnapshot(leader);
+        cluster.awaitSnapshotCount(1);
+
+        cluster.sendMessages(postSnapshotMessageCount);
+        cluster.awaitResponseMessageCount(totalMessageCount);
+        cluster.awaitServiceMessageCount(leader, totalMessageCount);
+
+        final long logPosition = leader.service().cluster().logPosition();
+
+        cluster.startClusterBackupNode(true, TestCluster.CHALLENGE_RESPONSE_CREDENTIALS_SUPPLIER);
+
+        cluster.awaitBackupState(ClusterBackup.State.BACKING_UP);
+        cluster.awaitBackupLiveLogPosition(logPosition);
+        cluster.stopAllNodes();
+
+        final TestNode node = cluster.startStaticNodeFromBackup();
+        cluster.awaitLeader();
+        cluster.awaitServiceMessageCount(node, totalMessageCount);
+
+        assertEquals(totalMessageCount, node.service().messageCount());
+        assertTrue(node.service().wasSnapshotLoaded());
+    }
+
+    @Test
+    @InterruptAfter(30)
+    void shouldLogErrorWithInvalidCredentials()
+    {
+        final AuthenticatorSupplier authenticatorSupplier = SampleAuthenticator::new;
+        final TestCluster cluster = aCluster()
+            .withStaticNodes(3)
+            .withAuthenticationSupplier(authenticatorSupplier)
+            .start();
+        systemTestWatcher.cluster(cluster);
+        systemTestWatcher.ignoreErrorsMatching(s -> s.contains("AUTHENTICATION_REJECTED"));
+
+        cluster.awaitLeader();
+        final TestBackupNode testBackupNode = cluster.startClusterBackupNode(true, INVALID_SIMPLE_CREDENTIALS_SUPPLIER);
+
+        cluster.awaitBackupState(ClusterBackup.State.RESET_BACKUP);
+
+        awaitErrorLogged(testBackupNode, "AUTHENTICATION_REJECTED");
+    }
+
+    @Test
+    @InterruptAfter(30)
+    void shouldLogErrorWithInvalidChallengeResponse()
+    {
+        final AuthenticatorSupplier authenticatorSupplier = SampleAuthenticator::new;
+        final TestCluster cluster = aCluster()
+            .withStaticNodes(3)
+            .withAuthenticationSupplier(authenticatorSupplier)
+            .start();
+        systemTestWatcher.cluster(cluster);
+        systemTestWatcher.ignoreErrorsMatching(s -> s.contains("AUTHENTICATION_REJECTED"));
+
+        cluster.awaitLeader();
+        final TestBackupNode testBackupNode = cluster.startClusterBackupNode(
+            true, INVALID_CHALLENGE_RESPONSE_CREDENTIALS_SUPPLIER);
+
+        cluster.awaitBackupState(ClusterBackup.State.RESET_BACKUP);
+
+        awaitErrorLogged(testBackupNode, "AUTHENTICATION_REJECTED");
+    }
+
+    @Test
+    @InterruptAfter(30)
+    void shouldBackupClusterWithSnapshotThenSend()
     {
         final TestCluster cluster = aCluster().withStaticNodes(3).start();
         systemTestWatcher.cluster(cluster);
@@ -251,9 +372,7 @@ public class ClusterBackupTest
         final int postSnapshotMessageCount = 7;
         final int totalMessageCount = preSnapshotMessageCount + postSnapshotMessageCount;
         cluster.connectClient();
-        cluster.sendMessages(preSnapshotMessageCount);
-        cluster.awaitResponseMessageCount(preSnapshotMessageCount);
-        cluster.awaitServicesMessageCount(preSnapshotMessageCount);
+        cluster.sendAndAwaitMessages(preSnapshotMessageCount);
 
         cluster.takeSnapshot(leader);
         cluster.awaitSnapshotCount(1);
@@ -280,7 +399,7 @@ public class ClusterBackupTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldBeAbleToGetTimeOfNextBackupQuery()
+    void shouldBeAbleToGetTimeOfNextBackupQuery()
     {
         final TestCluster cluster = aCluster().withStaticNodes(3).start();
         systemTestWatcher.cluster(cluster);
@@ -296,7 +415,7 @@ public class ClusterBackupTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldBackupClusterNoSnapshotsAndNonEmptyLogWithReQuery()
+    void shouldBackupClusterNoSnapshotsAndNonEmptyLogWithReQuery()
     {
         final TestCluster cluster = aCluster().withStaticNodes(3).start();
         systemTestWatcher.cluster(cluster);
@@ -305,9 +424,7 @@ public class ClusterBackupTest
 
         final int messageCount = 10;
         cluster.connectClient();
-        cluster.sendMessages(messageCount);
-        cluster.awaitResponseMessageCount(messageCount);
-        cluster.awaitServicesMessageCount(messageCount);
+        cluster.sendAndAwaitMessages(messageCount);
 
         final long logPosition = leader.service().cluster().logPosition();
         final TestBackupNode backupNode = cluster.startClusterBackupNode(true);
@@ -334,7 +451,7 @@ public class ClusterBackupTest
 
     @Test
     @InterruptAfter(40)
-    public void shouldBackupClusterNoSnapshotsAndNonEmptyLogAfterFailure()
+    void shouldBackupClusterNoSnapshotsAndNonEmptyLogAfterFailure()
     {
         final TestCluster cluster = aCluster().withStaticNodes(3).start();
         systemTestWatcher.cluster(cluster);
@@ -343,9 +460,7 @@ public class ClusterBackupTest
 
         final int messageCount = 10;
         cluster.connectClient();
-        cluster.sendMessages(messageCount);
-        cluster.awaitResponseMessageCount(messageCount);
-        cluster.awaitServicesMessageCount(messageCount);
+        cluster.sendAndAwaitMessages(messageCount);
 
         cluster.stopNode(leaderOne);
 
@@ -366,7 +481,7 @@ public class ClusterBackupTest
 
     @Test
     @InterruptAfter(60)
-    public void shouldBackupClusterNoSnapshotsAndNonEmptyLogWithFailure()
+    void shouldBackupClusterNoSnapshotsAndNonEmptyLogWithFailure()
     {
         final TestCluster cluster = aCluster().withStaticNodes(3).start();
         systemTestWatcher.cluster(cluster);
@@ -375,9 +490,7 @@ public class ClusterBackupTest
 
         final int messageCount = 10;
         final AeronCluster aeronCluster = cluster.connectClient();
-        cluster.sendMessages(messageCount);
-        cluster.awaitResponseMessageCount(messageCount);
-        cluster.awaitServicesMessageCount(messageCount);
+        cluster.sendAndAwaitMessages(messageCount);
 
         final long logPosition = leaderOne.service().cluster().logPosition();
 
@@ -406,5 +519,56 @@ public class ClusterBackupTest
 
         assertEquals(messageCount + 5, node.service().messageCount());
         assertFalse(node.service().wasSnapshotLoaded());
+    }
+
+    @InterruptAfter(30)
+    @ParameterizedTest()
+    @EnumSource(value = ClusterBackup.SourceType.class)
+    void shouldBackupClusterWithInvalidNameResolution(final ClusterBackup.SourceType sourceType)
+    {
+        final int backupNodeId = 3;
+        final TestCluster cluster = aCluster()
+            .withStaticNodes(3)
+            .withMemberSpecificInvalidNameResolution(backupNodeId)
+            .start();
+        systemTestWatcher.cluster(cluster);
+        systemTestWatcher.ignoreErrorsMatching(UNKNOWN_HOST_FILTER);
+
+        final TestNode leader = cluster.awaitLeader();
+
+        final int messageCount = 10;
+        cluster.connectClient();
+        cluster.sendAndAwaitMessages(messageCount);
+
+        final long logPosition = leader.service().cluster().logPosition();
+
+        cluster.startClusterBackupNode(true, sourceType);
+
+        cluster.awaitBackupNodeErrors();
+
+        cluster.restoreByMemberNameResolution(backupNodeId);
+
+        cluster.awaitBackupState(ClusterBackup.State.BACKING_UP);
+        cluster.awaitBackupLiveLogPosition(logPosition);
+    }
+
+    private static void awaitErrorLogged(final TestBackupNode testBackupNode, final String expectedErrorMessage)
+    {
+        final AtomicBuffer atomicBuffer = testBackupNode.clusterBackupErrorLog();
+        final MutableBoolean foundError = new MutableBoolean();
+
+        Tests.await(() ->
+        {
+            ErrorLogReader.read(
+                atomicBuffer,
+                (observationCount, firstObservationTimestamp, lastObservationTimestamp, encodedException) ->
+                {
+                    if (encodedException.contains(expectedErrorMessage))
+                    {
+                        foundError.set(true);
+                    }
+                });
+            return foundError.get();
+        });
     }
 }

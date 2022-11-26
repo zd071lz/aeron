@@ -26,11 +26,16 @@ import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.logbuffer.TermRebuilder;
 import io.aeron.protocol.DataHeaderFlyweight;
 import io.aeron.protocol.RttMeasurementFlyweight;
+import io.aeron.protocol.StatusMessageFlyweight;
 import org.agrona.CloseHelper;
 import org.agrona.ErrorHandler;
 import org.agrona.collections.ArrayListUtil;
 import org.agrona.collections.ArrayUtil;
-import org.agrona.concurrent.*;
+import org.agrona.concurrent.CachedNanoClock;
+import org.agrona.concurrent.EpochClock;
+import org.agrona.concurrent.MemoryAccess;
+import org.agrona.concurrent.NanoClock;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.Position;
 import org.agrona.concurrent.status.ReadablePosition;
@@ -74,6 +79,7 @@ class PublicationImagePadding2 extends PublicationImageConductorFields
 class PublicationImageReceiverFields extends PublicationImagePadding2
 {
     boolean isEndOfStream = false;
+    boolean isSendingEosSm = false;
     long timeOfLastPacketNs;
     ImageConnection[] imageConnections = new ImageConnection[1];
 }
@@ -97,6 +103,9 @@ public final class PublicationImage
     {
         INIT, ACTIVE, DRAINING, LINGER, DONE
     }
+
+    // expected minimum number of SMs with EOS bit set sent during draining.
+    private static final long SM_EOS_MULTIPLE = 5;
 
     private static final AtomicLongFieldUpdater<PublicationImage> BEGIN_SM_CHANGE_UPDATER =
         AtomicLongFieldUpdater.newUpdater(PublicationImage.class, "beginSmChange");
@@ -123,7 +132,7 @@ public final class PublicationImage
     private int lossLength;
     private long lastLossChangeNumber = Aeron.NULL_VALUE;
 
-    private long timeOfLastStateChangeNs;
+    private volatile long timeOfLastStateChangeNs;
 
     private final long correlationId;
     private final long imageLivenessTimeoutNs;
@@ -137,6 +146,7 @@ public final class PublicationImage
     private final boolean isReliable;
 
     private boolean isRebuilding = true;
+    private volatile boolean isReceiverReleaseTriggered = false;
     private volatile boolean hasReceiverReleased = false;
     private volatile State state = State.INIT;
 
@@ -149,6 +159,7 @@ public final class PublicationImage
     private final ErrorHandler errorHandler;
     private final Position rebuildPosition;
     private final InetSocketAddress sourceAddress;
+    private final String sourceIdentity;
     private final AtomicCounter heartbeatsReceived;
     private final AtomicCounter statusMessagesSent;
     private final AtomicCounter nakMessagesSent;
@@ -176,6 +187,7 @@ public final class PublicationImage
         final Position hwmPosition,
         final Position rebuildPosition,
         final InetSocketAddress sourceAddress,
+        final String sourceIdentity,
         final CongestionControl congestionControl)
     {
         this.correlationId = correlationId;
@@ -190,6 +202,7 @@ public final class PublicationImage
         this.hwmPosition = hwmPosition;
         this.rebuildPosition = rebuildPosition;
         this.sourceAddress = sourceAddress;
+        this.sourceIdentity = sourceIdentity;
         this.initialTermId = initialTermId;
         this.congestionControl = congestionControl;
         this.errorHandler = ctx.errorHandler();
@@ -374,8 +387,8 @@ public final class PublicationImage
         }
         else if (null != lossReport)
         {
-            final String source = Configuration.sourceIdentity(sourceAddress);
-            reportEntry = lossReport.createEntry(length, epochClock.time(), sessionId, streamId, channel(), source);
+            reportEntry = lossReport.createEntry(
+                length, epochClock.time(), sessionId, streamId, channel(), sourceIdentity);
 
             if (null == reportEntry)
             {
@@ -392,6 +405,17 @@ public final class PublicationImage
     InetSocketAddress sourceAddress()
     {
         return sourceAddress;
+    }
+
+    /**
+     * Source identity for a {@link #sourceAddress()}.
+     *
+     * @return source identity for a source address.
+     * @see Configuration#sourceIdentity(InetSocketAddress)
+     */
+    String sourceIdentity()
+    {
+        return sourceIdentity;
     }
 
     /**
@@ -429,7 +453,7 @@ public final class PublicationImage
     void activate()
     {
         timeOfLastStateChangeNs = cachedNanoClock.nanoTime();
-        this.state = State.ACTIVE;
+        state = State.ACTIVE;
     }
 
     /**
@@ -440,9 +464,22 @@ public final class PublicationImage
     {
         if (State.ACTIVE == state)
         {
+            final long nowNs = cachedNanoClock.nanoTime();
+
             isRebuilding = false;
-            timeOfLastStateChangeNs = cachedNanoClock.nanoTime();
-            this.state = State.DRAINING;
+            timeOfLastStateChangeNs = nowNs;
+
+            if (!isSendingEosSm)
+            {
+                isSendingEosSm = !isEndOfStream || rebuildPosition.getVolatile() == hwmPosition.get();
+            }
+
+            if (isSendingEosSm)
+            {
+                timeOfLastSmNs = nowNs - smTimeoutNs - 1;
+            }
+
+            state = State.DRAINING;
         }
     }
 
@@ -593,7 +630,7 @@ public final class PublicationImage
     }
 
     /**
-     * To be called from the {@link Receiver} to see if an image should be dispatched to.
+     * To be called from the {@link Receiver} to see if image should be dispatched to.
      *
      * @param nowNs current time to check against for activity.
      * @return true if the image should be retained otherwise false.
@@ -602,7 +639,28 @@ public final class PublicationImage
     {
         return ((timeOfLastPacketNs + imageLivenessTimeoutNs) - nowNs >= 0) &&
             !channelEndpoint.isClosed() &&
-            (!isEndOfStream || rebuildPosition.getVolatile() < hwmPosition.get());
+            (!isEndOfStream || !isReceiverReleaseTriggered);
+    }
+
+    /**
+     * Check for EOS from publication and switch to {@link State#DRAINING} if at end of stream position.
+     *
+     * @param nowNs current time of use.
+     */
+    void checkEosForDrainTransition(final long nowNs)
+    {
+        if (!isSendingEosSm)
+        {
+            if (isEndOfStream && rebuildPosition.getVolatile() == hwmPosition.get() && State.ACTIVE == state)
+            {
+                isRebuilding = false;
+                timeOfLastStateChangeNs = nowNs;
+
+                isSendingEosSm = true;
+                timeOfLastSmNs = nowNs - smTimeoutNs - 1;
+                state = State.DRAINING;
+            }
+        }
     }
 
     /**
@@ -627,9 +685,10 @@ public final class PublicationImage
             {
                 final int termId = computeTermIdFromPosition(smPosition, positionBitsToShift, initialTermId);
                 final int termOffset = (int)smPosition & termLengthMask;
+                final short flags = isSendingEosSm ? StatusMessageFlyweight.END_OF_STREAM_FLAG : 0;
 
                 channelEndpoint.sendStatusMessage(
-                    imageConnections, sessionId, streamId, termId, termOffset, receiverWindowLength, (byte)0);
+                    imageConnections, sessionId, streamId, termId, termOffset, receiverWindowLength, flags);
 
                 statusMessagesSent.incrementOrdered();
 
@@ -759,10 +818,15 @@ public final class PublicationImage
                 break;
 
             case DRAINING:
-                if (isDrained())
+                if (isDrained() && ((timeOfLastStateChangeNs + (SM_EOS_MULTIPLE * smTimeoutNs)) - timeNs < 0))
                 {
                     conductor.transitionToLinger(this);
+
+                    channelEndpoint.decRefImages();
+                    conductor.tryCloseReceiveChannelEndpoint(channelEndpoint);
+
                     timeOfLastStateChangeNs = timeNs;
+                    isReceiverReleaseTriggered = true;
                     state = State.LINGER;
                 }
                 break;
@@ -949,7 +1013,7 @@ public final class PublicationImage
                             untethered.position.id(),
                             joinPosition(),
                             rawLog.fileName(),
-                            Configuration.sourceIdentity(sourceAddress));
+                            sourceIdentity);
                         untethered.state(UntetheredSubscription.State.ACTIVE, nowNs, streamId, sessionId);
                     }
                 }

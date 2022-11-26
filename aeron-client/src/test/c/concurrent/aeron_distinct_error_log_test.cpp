@@ -340,8 +340,7 @@ static void test_append_distinct_message(aeron_distinct_error_log_t *error_log, 
         }
     }
 
-    std::vector<int> counts;
-    counts.resize(NUM_THREADS, 0);
+    std::vector<int> counts(NUM_THREADS);
 
     size_t entries = aeron_error_log_read(
         log_buffer->data(), log_buffer->size(), distinct_message_log_reader, &counts, 0);
@@ -508,8 +507,7 @@ static void test_append_unique_messages(aeron_distinct_error_log_t *error_log, b
     }
 
     const size_t total_number_of_entries = APPENDS_PER_THREAD * NUM_THREADS;
-    std::vector<int> counts;
-    counts.resize(total_number_of_entries, 0);
+    std::vector<int> counts(total_number_of_entries);
 
     size_t entries = aeron_error_log_read(
         log_buffer->data(), log_buffer->size(), unique_message_log_reader, &counts, 0);

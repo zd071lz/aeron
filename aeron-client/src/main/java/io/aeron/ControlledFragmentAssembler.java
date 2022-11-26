@@ -17,10 +17,12 @@ package io.aeron;
 
 import io.aeron.logbuffer.ControlledFragmentHandler;
 import io.aeron.logbuffer.Header;
+import org.agrona.BitUtil;
 import org.agrona.DirectBuffer;
 import org.agrona.collections.Int2ObjectHashMap;
 
 import static io.aeron.logbuffer.FrameDescriptor.*;
+import static io.aeron.protocol.DataHeaderFlyweight.HEADER_LENGTH;
 
 /**
  * A {@link ControlledFragmentHandler} that sits in a chain-of-responsibility pattern that reassembles fragmented
@@ -114,45 +116,51 @@ public class ControlledFragmentAssembler implements ControlledFragmentHandler
     public Action onFragment(final DirectBuffer buffer, final int offset, final int length, final Header header)
     {
         final byte flags = header.flags();
-
         Action action = Action.CONTINUE;
 
         if ((flags & UNFRAGMENTED) == UNFRAGMENTED)
         {
             action = delegate.onFragment(buffer, offset, length, header);
         }
+        else if ((flags & BEGIN_FRAG_FLAG) == BEGIN_FRAG_FLAG)
+        {
+            final BufferBuilder builder = getBufferBuilder(header.sessionId());
+            builder.reset()
+                .append(buffer, offset, length)
+                .nextTermOffset(BitUtil.align(offset + length + HEADER_LENGTH, FRAME_ALIGNMENT));
+        }
         else
         {
-            if ((flags & BEGIN_FRAG_FLAG) == BEGIN_FRAG_FLAG)
+            final BufferBuilder builder = builderBySessionIdMap.get(header.sessionId());
+            if (null != builder)
             {
-                final BufferBuilder builder = getBufferBuilder(header.sessionId());
-                builder.reset().append(buffer, offset, length);
-            }
-            else
-            {
-                final BufferBuilder builder = builderBySessionIdMap.get(header.sessionId());
-                if (null != builder)
+                if (offset == builder.nextTermOffset())
                 {
                     final int limit = builder.limit();
-                    if (limit > 0)
+
+                    builder.append(buffer, offset, length);
+
+                    if ((flags & END_FRAG_FLAG) == END_FRAG_FLAG)
                     {
-                        builder.append(buffer, offset, length);
+                        action = delegate.onFragment(builder.buffer(), 0, builder.limit(), header);
 
-                        if ((flags & END_FRAG_FLAG) == END_FRAG_FLAG)
+                        if (Action.ABORT == action)
                         {
-                            final int msgLength = builder.limit();
-                            action = delegate.onFragment(builder.buffer(), 0, msgLength, header);
-
-                            if (Action.ABORT == action)
-                            {
-                                builder.limit(limit);
-                            }
-                            else
-                            {
-                                builder.reset();
-                            }
+                            builder.limit(limit);
+                        }
+                        else
+                        {
+                            builder.reset();
                         }
                     }
+                    else
+                    {
+                        builder.nextTermOffset(BitUtil.align(offset + length + HEADER_LENGTH, FRAME_ALIGNMENT));
+                    }
+                }
+                else
+                {
+                    builder.reset();
                 }
             }
         }

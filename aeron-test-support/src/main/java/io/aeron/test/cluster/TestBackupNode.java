@@ -24,6 +24,7 @@ import io.aeron.driver.MediaDriver;
 import io.aeron.test.DataCollector;
 import io.aeron.test.driver.TestMediaDriver;
 import org.agrona.CloseHelper;
+import org.agrona.concurrent.AtomicBuffer;
 import org.agrona.concurrent.EpochClock;
 
 import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
@@ -33,11 +34,13 @@ public class TestBackupNode implements AutoCloseable
     private final TestMediaDriver mediaDriver;
     private final Archive archive;
     private final ClusterBackup clusterBackup;
+    private final int index;
     private final Context context;
     private boolean isClosed = false;
 
-    TestBackupNode(final Context context, final DataCollector dataCollector)
+    TestBackupNode(final int index, final Context context, final DataCollector dataCollector)
     {
+        this.index = index;
         this.context = context;
         try
         {
@@ -112,6 +115,26 @@ public class TestBackupNode implements AutoCloseable
         final long nowMs = epochClock().time();
 
         return ClusterTool.nextBackupQueryDeadlineMs(context.clusterBackupContext.clusterDir(), nowMs + delayMs);
+    }
+
+    public AtomicBuffer clusterBackupErrorLog()
+    {
+        return clusterBackup.context().clusterMarkFile().errorBuffer();
+    }
+
+    long clusterBackupErrorCount()
+    {
+        return clusterBackup.context().errorCounter().get();
+    }
+
+    int index()
+    {
+        return index;
+    }
+
+    TestMediaDriver mediaDriver()
+    {
+        return mediaDriver;
     }
 
     static class Context

@@ -23,11 +23,11 @@ import io.aeron.driver.media.UdpChannel;
 import io.aeron.driver.status.SystemCounters;
 import io.aeron.logbuffer.HeaderWriter;
 import io.aeron.logbuffer.LogBufferDescriptor;
-import io.aeron.logbuffer.TermAppender;
 import io.aeron.protocol.DataHeaderFlyweight;
 import io.aeron.protocol.HeaderFlyweight;
 import io.aeron.protocol.SetupFlyweight;
 import io.aeron.protocol.StatusMessageFlyweight;
+import org.agrona.DirectBuffer;
 import org.agrona.ErrorHandler;
 import org.agrona.concurrent.CachedEpochClock;
 import org.agrona.concurrent.CachedNanoClock;
@@ -46,14 +46,15 @@ import java.util.ArrayDeque;
 import java.util.Queue;
 
 import static io.aeron.logbuffer.FrameDescriptor.FRAME_ALIGNMENT;
-import static io.aeron.logbuffer.LogBufferDescriptor.PARTITION_COUNT;
+import static io.aeron.logbuffer.FrameDescriptor.frameLengthOrdered;
+import static io.aeron.protocol.DataHeaderFlyweight.HEADER_LENGTH;
 import static org.agrona.BitUtil.align;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.core.Is.is;
 import static org.mockito.Mockito.*;
 
-public class SenderTest
+class SenderTest
 {
     private static final int TERM_BUFFER_LENGTH = LogBufferDescriptor.TERM_MIN_LENGTH;
     private static final int MAX_FRAME_LENGTH = 1024;
@@ -70,8 +71,6 @@ public class SenderTest
     private final ControlTransportPoller mockTransportPoller = mock(ControlTransportPoller.class);
 
     private final RawLog rawLog = TestLogFactory.newLogBuffers(TERM_BUFFER_LENGTH);
-
-    private TermAppender[] termAppenders;
     private NetworkPublication publication;
     private Sender sender;
 
@@ -108,7 +107,7 @@ public class SenderTest
     private final ErrorHandler errorHandler = mock(ErrorHandler.class);
 
     @BeforeEach
-    public void setUp()
+    void setUp()
     {
         final SendChannelEndpoint mockSendChannelEndpoint = mock(SendChannelEndpoint.class);
         when(mockSendChannelEndpoint.udpChannel()).thenReturn(udpChannel);
@@ -124,16 +123,11 @@ public class SenderTest
             .systemCounters(mockSystemCounters)
             .senderCommandQueue(senderCommandQueue)
             .nanoClock(nanoClock)
-            .errorHandler(errorHandler);
+            .errorHandler(errorHandler)
+            .senderDutyCycleTracker(new DutyCycleTracker());
         sender = new Sender(ctx);
 
         LogBufferDescriptor.initialiseTailWithTermId(rawLog.metaData(), 0, INITIAL_TERM_ID);
-
-        termAppenders = new TermAppender[PARTITION_COUNT];
-        for (int i = 0; i < PARTITION_COUNT; i++)
-        {
-            termAppenders[i] = new TermAppender(rawLog.termBuffers()[i], rawLog.metaData(), i);
-        }
 
         final PublicationParams params = new PublicationParams();
         params.entityTag = 101;
@@ -165,13 +159,13 @@ public class SenderTest
     }
 
     @AfterEach
-    public void tearDown()
+    void tearDown()
     {
         sender.onClose();
     }
 
     @Test
-    public void shouldSendSetupFrameOnChannelWhenTimeoutWithoutStatusMessage()
+    void shouldSendSetupFrameOnChannelWhenTimeoutWithoutStatusMessage()
     {
         sender.doWork();
         assertThat(receivedFrames.size(), is(1));
@@ -195,7 +189,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldSendMultipleSetupFramesOnChannelWhenTimeoutWithoutStatusMessage()
+    void shouldSendMultipleSetupFramesOnChannelWhenTimeoutWithoutStatusMessage()
     {
         sender.doWork();
         assertThat(receivedFrames.size(), is(1));
@@ -210,7 +204,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldNotSendSetupFrameOnlyOnceAfterReceivingStatusMessage()
+    void shouldNotSendSetupFrameOnlyOnceAfterReceivingStatusMessage()
     {
         final StatusMessageFlyweight msg = mock(StatusMessageFlyweight.class);
         when(msg.consumptionTermId()).thenReturn(INITIAL_TERM_ID);
@@ -235,7 +229,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldSendSetupFrameAfterReceivingStatusMessageWithSetupBit()
+    void shouldSendSetupFrameAfterReceivingStatusMessageWithSetupBit()
     {
         final StatusMessageFlyweight msg = mock(StatusMessageFlyweight.class);
         when(msg.consumptionTermId()).thenReturn(INITIAL_TERM_ID);
@@ -252,7 +246,7 @@ public class SenderTest
         final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(PAYLOAD.length));
         buffer.putBytes(0, PAYLOAD);
 
-        termAppenders[0].appendUnfragmentedMessage(headerWriter, buffer, 0, PAYLOAD.length, null, INITIAL_TERM_ID);
+        appendUnfragmentedMessage(rawLog, 0, INITIAL_TERM_ID, 0, headerWriter, buffer, 0, PAYLOAD.length);
         sender.doWork();
 
         assertThat(receivedFrames.size(), is(1)); // data
@@ -276,7 +270,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldSendHeartbeatsEvenIfSendingPeriodicSetupFrames()
+    void shouldSendHeartbeatsEvenIfSendingPeriodicSetupFrames()
     {
         final StatusMessageFlyweight msg = mock(StatusMessageFlyweight.class);
         when(msg.consumptionTermId()).thenReturn(INITIAL_TERM_ID);
@@ -304,7 +298,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldBeAbleToSendOnChannel()
+    void shouldBeAbleToSendOnChannel()
     {
         final StatusMessageFlyweight msg = mock(StatusMessageFlyweight.class);
         when(msg.consumptionTermId()).thenReturn(INITIAL_TERM_ID);
@@ -316,7 +310,7 @@ public class SenderTest
         final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(PAYLOAD.length));
         buffer.putBytes(0, PAYLOAD);
 
-        termAppenders[0].appendUnfragmentedMessage(headerWriter, buffer, 0, PAYLOAD.length, null, INITIAL_TERM_ID);
+        appendUnfragmentedMessage(rawLog, 0, INITIAL_TERM_ID, 0, headerWriter, buffer, 0, PAYLOAD.length);
         sender.doWork();
 
         assertThat(receivedFrames.size(), is(1));
@@ -333,7 +327,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldBeAbleToSendOnChannelTwice()
+    void shouldBeAbleToSendOnChannelTwice()
     {
         final StatusMessageFlyweight msg = mock(StatusMessageFlyweight.class);
         when(msg.consumptionTermId()).thenReturn(INITIAL_TERM_ID);
@@ -345,9 +339,13 @@ public class SenderTest
         final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(PAYLOAD.length));
         buffer.putBytes(0, PAYLOAD);
 
-        termAppenders[0].appendUnfragmentedMessage(headerWriter, buffer, 0, PAYLOAD.length, null, INITIAL_TERM_ID);
+        final int offset = appendUnfragmentedMessage(
+            rawLog, 0, INITIAL_TERM_ID, 0, headerWriter, buffer, 0, PAYLOAD.length);
+
         sender.doWork();
-        termAppenders[0].appendUnfragmentedMessage(headerWriter, buffer, 0, PAYLOAD.length, null, INITIAL_TERM_ID);
+
+        appendUnfragmentedMessage(rawLog, 0, INITIAL_TERM_ID, offset, headerWriter, buffer, 0, PAYLOAD.length);
+
         sender.doWork();
 
         assertThat(receivedFrames.size(), is(2));
@@ -374,11 +372,11 @@ public class SenderTest
     }
 
     @Test
-    public void shouldNotSendUntilStatusMessageReceived()
+    void shouldNotSendUntilStatusMessageReceived()
     {
         final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(PAYLOAD.length));
         buffer.putBytes(0, PAYLOAD);
-        termAppenders[0].appendUnfragmentedMessage(headerWriter, buffer, 0, PAYLOAD.length, null, INITIAL_TERM_ID);
+        appendUnfragmentedMessage(rawLog, 0, INITIAL_TERM_ID, 0, headerWriter, buffer, 0, PAYLOAD.length);
 
         sender.doWork();
         assertThat(receivedFrames.size(), is(1));
@@ -408,11 +406,11 @@ public class SenderTest
     }
 
     @Test
-    public void shouldNotBeAbleToSendAfterUsingUpYourWindow()
+    void shouldNotBeAbleToSendAfterUsingUpYourWindow()
     {
         final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(PAYLOAD.length));
         buffer.putBytes(0, PAYLOAD);
-        termAppenders[0].appendUnfragmentedMessage(headerWriter, buffer, 0, PAYLOAD.length, null, INITIAL_TERM_ID);
+        appendUnfragmentedMessage(rawLog, 0, INITIAL_TERM_ID, 0, headerWriter, buffer, 0, PAYLOAD.length);
 
         final StatusMessageFlyweight msg = mock(StatusMessageFlyweight.class);
         when(msg.consumptionTermId()).thenReturn(INITIAL_TERM_ID);
@@ -435,14 +433,15 @@ public class SenderTest
         assertThat(dataHeader.flags(), is(DataHeaderFlyweight.BEGIN_AND_END_FLAGS));
         assertThat(dataHeader.version(), is((short)HeaderFlyweight.CURRENT_VERSION));
 
-        termAppenders[0].appendUnfragmentedMessage(headerWriter, buffer, 0, PAYLOAD.length, null, INITIAL_TERM_ID);
+        appendUnfragmentedMessage(rawLog, 0, INITIAL_TERM_ID, 0, headerWriter, buffer, 0, PAYLOAD.length);
+
         sender.doWork();
 
         assertThat(receivedFrames.size(), is(0));
     }
 
     @Test
-    public void shouldSendLastDataFrameAsHeartbeatWhenIdle()
+    void shouldSendLastDataFrameAsHeartbeatWhenIdle()
     {
         final StatusMessageFlyweight msg = mock(StatusMessageFlyweight.class);
         when(msg.consumptionTermId()).thenReturn(INITIAL_TERM_ID);
@@ -454,7 +453,8 @@ public class SenderTest
         final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(PAYLOAD.length));
         buffer.putBytes(0, PAYLOAD);
 
-        termAppenders[0].appendUnfragmentedMessage(headerWriter, buffer, 0, PAYLOAD.length, null, INITIAL_TERM_ID);
+        appendUnfragmentedMessage(rawLog, 0, INITIAL_TERM_ID, 0, headerWriter, buffer, 0, PAYLOAD.length);
+
         sender.doWork();
 
         assertThat(receivedFrames.size(), is(1));  // should send ticks
@@ -475,7 +475,7 @@ public class SenderTest
     }
 
     @Test
-    public void shouldSendMultipleDataFramesAsHeartbeatsWhenIdle()
+    void shouldSendMultipleDataFramesAsHeartbeatsWhenIdle()
     {
         final StatusMessageFlyweight msg = mock(StatusMessageFlyweight.class);
         when(msg.consumptionTermId()).thenReturn(INITIAL_TERM_ID);
@@ -487,7 +487,8 @@ public class SenderTest
         final UnsafeBuffer buffer = new UnsafeBuffer(ByteBuffer.allocateDirect(PAYLOAD.length));
         buffer.putBytes(0, PAYLOAD);
 
-        termAppenders[0].appendUnfragmentedMessage(headerWriter, buffer, 0, PAYLOAD.length, null, INITIAL_TERM_ID);
+        appendUnfragmentedMessage(rawLog, 0, INITIAL_TERM_ID, 0, headerWriter, buffer, 0, PAYLOAD.length);
+
         sender.doWork();
 
         assertThat(receivedFrames.size(), is(1));  // should send ticks
@@ -521,5 +522,31 @@ public class SenderTest
     private int offsetOfMessage(final int offset)
     {
         return (offset - 1) * align(HEADER.capacity() + PAYLOAD.length, FRAME_ALIGNMENT);
+    }
+
+    private int appendUnfragmentedMessage(
+        final RawLog rawLog,
+        final int partitionIndex,
+        final int termId,
+        final int termOffset,
+        final HeaderWriter header,
+        final DirectBuffer srcBuffer,
+        final int srcOffset,
+        final int length)
+    {
+        final UnsafeBuffer termBuffer = rawLog.termBuffers()[partitionIndex];
+        final int frameLength = length + HEADER_LENGTH;
+        final int alignedLength = align(frameLength, FRAME_ALIGNMENT);
+        final int resultingOffset = termOffset + alignedLength;
+        final long rawTail = LogBufferDescriptor.packTail(termId, resultingOffset);
+
+        LogBufferDescriptor.rawTail(rawLog.metaData(), partitionIndex, rawTail);
+
+        header.write(termBuffer, termOffset, frameLength, termId);
+        termBuffer.putBytes(termOffset + HEADER_LENGTH, srcBuffer, srcOffset, length);
+
+        frameLengthOrdered(termBuffer, termOffset, frameLength);
+
+        return resultingOffset;
     }
 }

@@ -48,11 +48,15 @@ class IngressAdapter implements ControlledFragmentHandler, AutoCloseable
     public void close()
     {
         final Subscription subscription = this.subscription;
+
         this.subscription = null;
         fragmentAssembler.clear();
         if (null != subscription)
         {
+            final long subscriptionRegistrationId = subscription.registrationId();
+
             subscription.close();
+            consensusModuleAgent.awaitNoLocalSocketAddresses(subscriptionRegistrationId);
         }
     }
 
@@ -156,7 +160,7 @@ class IngressAdapter implements ControlledFragmentHandler, AutoCloseable
                 final byte[] credentials = new byte[challengeResponseDecoder.encodedCredentialsLength()];
                 challengeResponseDecoder.getEncodedCredentials(credentials, 0, credentials.length);
 
-                consensusModuleAgent.onChallengeResponse(
+                consensusModuleAgent.onIngressChallengeResponse(
                     challengeResponseDecoder.correlationId(),
                     challengeResponseDecoder.clusterSessionId(),
                     credentials);

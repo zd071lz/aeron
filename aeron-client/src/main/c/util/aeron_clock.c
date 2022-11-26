@@ -78,6 +78,11 @@ int aeron_clock_gettime_realtime(struct timespec *tv)
     return 0;
 }
 
+static inline int aeron_clock_gettime_realtime_coarse(struct timespec *tv)
+{
+    return aeron_clock_gettime_realtime(tv);
+}
+
 #else
 
 int aeron_clock_gettime_monotonic(struct timespec *tp)
@@ -89,7 +94,7 @@ int aeron_clock_gettime_monotonic(struct timespec *tp)
 #endif
 }
 
-int aeron_clock_gettime_realtime(struct timespec *time)
+static int aeron_clock_gettime_realtime_coarse(struct timespec *time)
 {
 #if defined(CLOCK_REALTIME_COARSE)
     return clock_gettime(CLOCK_REALTIME_COARSE, time);
@@ -98,9 +103,14 @@ int aeron_clock_gettime_realtime(struct timespec *time)
 #endif
 }
 
+int aeron_clock_gettime_realtime(struct timespec *time)
+{
+    return clock_gettime(CLOCK_REALTIME, time);
+}
+
 #endif
 
-int64_t aeron_nano_clock()
+int64_t aeron_nano_clock(void)
 {
     struct timespec ts;
     if (aeron_clock_gettime_monotonic(&ts) < 0)
@@ -111,10 +121,10 @@ int64_t aeron_nano_clock()
     return ((int64_t)ts.tv_sec * 1000000000) + ts.tv_nsec;
 }
 
-int64_t aeron_epoch_clock()
+int64_t aeron_epoch_clock(void)
 {
     struct timespec ts;
-    if (aeron_clock_gettime_realtime(&ts) < 0)
+    if (aeron_clock_gettime_realtime_coarse(&ts) < 0)
     {
         return -1;
     }

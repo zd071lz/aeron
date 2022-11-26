@@ -80,7 +80,7 @@ abstract class SubscriptionFields extends SubscriptionLhsPadding
  * to the {@link FragmentHandler}.
  * <p>
  * By default, fragmented messages are not reassembled before delivery. If an application must
- * receive whole messages, whether or not they were fragmented, then the Subscriber
+ * receive whole messages, even if they were fragmented, then the Subscriber
  * should be created with a {@link FragmentAssembler} or a custom implementation.
  * <p>
  * It is an application's responsibility to {@link #poll} the {@link Subscription} for new messages.
@@ -548,11 +548,7 @@ public final class Subscription extends SubscriptionFields implements AutoClosea
 
                 if (null != endpoint && endpoint.endsWith(":0"))
                 {
-                    final String resolvedEndpoint = localSocketAddresses.get(0);
-                    final int i = resolvedEndpoint.lastIndexOf(':');
-                    uri.put(CommonContext.ENDPOINT_PARAM_NAME,
-                        endpoint.substring(0, endpoint.length() - 2) + resolvedEndpoint.substring(i));
-
+                    uri.replaceEndpointWildcardPort(localSocketAddresses.get(0));
                     return uri.toString();
                 }
             }

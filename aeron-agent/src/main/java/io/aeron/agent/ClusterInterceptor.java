@@ -15,6 +15,7 @@
  */
 package io.aeron.agent;
 
+import io.aeron.Aeron;
 import io.aeron.cluster.codecs.CloseReason;
 import net.bytebuddy.asm.Advice;
 
@@ -29,9 +30,9 @@ class ClusterInterceptor
     {
         @Advice.OnMethodEnter
         static <E extends Enum<E>> void logStateChange(
+            final int memberId,
             final E oldState,
             final E newState,
-            final int memberId,
             final int leaderId,
             final long candidateTermId,
             final long leadershipTermId,
@@ -41,9 +42,9 @@ class ClusterInterceptor
             final long catchupPosition)
         {
             LOGGER.logElectionStateChange(
+                memberId,
                 oldState,
                 newState,
-                memberId,
                 leaderId,
                 candidateTermId,
                 leadershipTermId,
@@ -57,7 +58,8 @@ class ClusterInterceptor
     static class NewLeadershipTerm
     {
         @Advice.OnMethodEnter
-        static void logNewLeadershipTerm(
+        static void logOnNewLeadershipTerm(
+            final int memberId,
             final long logLeadershipTermId,
             final long nextLeadershipTermId,
             final long nextTermBaseLogPosition,
@@ -67,12 +69,13 @@ class ClusterInterceptor
             final long logPosition,
             final long leaderRecordingId,
             final long timestamp,
-            final int memberId,
             final int leaderId,
             final int logSessionId,
+            final int appVersion,
             final boolean isStartup)
         {
-            LOGGER.logNewLeadershipTerm(
+            LOGGER.logOnNewLeadershipTerm(
+                memberId,
                 logLeadershipTermId,
                 nextLeadershipTermId,
                 nextTermBaseLogPosition,
@@ -82,9 +85,9 @@ class ClusterInterceptor
                 logPosition,
                 leaderRecordingId,
                 timestamp,
-                memberId,
                 leaderId,
                 logSessionId,
+                appVersion,
                 isStartup);
         }
     }
@@ -92,63 +95,73 @@ class ClusterInterceptor
     static class ConsensusModuleStateChange
     {
         @Advice.OnMethodEnter
-        static <E extends Enum<E>> void logStateChange(final E oldState, final E newState, final int memberId)
+        static <E extends Enum<E>> void logStateChange(final int memberId, final E oldState, final E newState)
         {
-            LOGGER.logStateChange(STATE_CHANGE, oldState, newState, memberId);
+            LOGGER.logStateChange(STATE_CHANGE, memberId, oldState, newState);
         }
     }
 
     static class ConsensusModuleRoleChange
     {
         @Advice.OnMethodEnter
-        static <E extends Enum<E>> void logRoleChange(final E oldRole, final E newRole, final int memberId)
+        static <E extends Enum<E>> void logRoleChange(final int memberId, final E oldRole, final E newRole)
         {
-            LOGGER.logStateChange(ROLE_CHANGE, oldRole, newRole, memberId);
+            LOGGER.logStateChange(ROLE_CHANGE, memberId, oldRole, newRole);
         }
     }
 
     static class CanvassPosition
     {
         @Advice.OnMethodEnter
-        static void onCanvassPosition(
+        static void logOnCanvassPosition(
+            final int memberId,
             final long logLeadershipTermId,
             final long logPosition,
             final long leadershipTermId,
-            final int followerMemberId)
+            final int followerMemberId,
+            final int protocolVersion)
         {
-            LOGGER.logCanvassPosition(logLeadershipTermId, leadershipTermId, logPosition, followerMemberId);
+            LOGGER.logOnCanvassPosition(
+                memberId, logLeadershipTermId, logPosition, leadershipTermId, followerMemberId, protocolVersion);
         }
     }
 
     static class RequestVote
     {
         @Advice.OnMethodEnter
-        static void onRequestVote(
-            final long logLeadershipTermId, final long logPosition, final long candidateTermId, final int candidateId)
+        static void logOnRequestVote(
+            final int memberId,
+            final long logLeadershipTermId,
+            final long logPosition,
+            final long candidateTermId,
+            final int candidateId,
+            final int protocolVersion)
         {
-            LOGGER.logRequestVote(logLeadershipTermId, logPosition, candidateTermId, candidateId);
+            LOGGER.logOnRequestVote(
+                memberId, logLeadershipTermId, logPosition, candidateTermId, candidateId, protocolVersion);
         }
     }
 
     static class CatchupPosition
     {
         @Advice.OnMethodEnter
-        static void onCatchupPosition(
+        static void logOnCatchupPosition(
+            final int memberId,
             final long leadershipTermId,
             final long logPosition,
             final int followerMemberId,
             final String catchupEndpoint)
         {
-            LOGGER.logCatchupPosition(leadershipTermId, logPosition, followerMemberId, catchupEndpoint);
+            LOGGER.logOnCatchupPosition(memberId, leadershipTermId, logPosition, followerMemberId, catchupEndpoint);
         }
     }
 
     static class StopCatchup
     {
         @Advice.OnMethodEnter
-        static void onStopCatchup(final long leadershipTermId, final int followerMemberId)
+        static void logOnStopCatchup(final int memberId, final long leadershipTermId, final int followerMemberId)
         {
-            LOGGER.logStopCatchup(leadershipTermId, followerMemberId);
+            LOGGER.logOnStopCatchup(memberId, leadershipTermId, followerMemberId);
         }
     }
 
@@ -167,7 +180,7 @@ class ClusterInterceptor
             final long oldPosition,
             final long newPosition)
         {
-            LOGGER.logTruncateLogEntry(
+            LOGGER.logOnTruncateLogEntry(
                 memberId,
                 state,
                 logLeadershipTermId,
@@ -184,7 +197,7 @@ class ClusterInterceptor
     static class ReplayNewLeadershipTerm
     {
         @Advice.OnMethodEnter
-        static void logReplayNewLeadershipTermEvent(
+        static void logOnReplayNewLeadershipTermEvent(
             final int memberId,
             final boolean isInElection,
             final long leadershipTermId,
@@ -194,7 +207,7 @@ class ClusterInterceptor
             final TimeUnit timeUnit,
             final int appVersion)
         {
-            LOGGER.logReplayNewLeadershipTermEvent(
+            LOGGER.logOnReplayNewLeadershipTermEvent(
                 memberId,
                 isInElection,
                 leadershipTermId,
@@ -209,16 +222,18 @@ class ClusterInterceptor
     static class AppendPosition
     {
         @Advice.OnMethodEnter
-        static void onAppendPosition(
+        static void logOnAppendPosition(
+            final int memberId,
             final long leadershipTermId,
             final long logPosition,
-            final int memberId,
+            final int followerMemberId,
             final short flags)
         {
-            LOGGER.logAppendPosition(
+            LOGGER.logOnAppendPosition(
+                memberId,
                 leadershipTermId,
                 logPosition,
-                memberId,
+                followerMemberId,
                 flags);
         }
     }
@@ -226,25 +241,25 @@ class ClusterInterceptor
     static class CommitPosition
     {
         @Advice.OnMethodEnter
-        static void logCommitPosition(
+        static void logOnCommitPosition(
+            final int memberId,
             final long leadershipTermId,
             final long logPosition,
-            final int leaderId,
-            final int memberId)
+            final int leaderMemberId)
         {
-            LOGGER.logCommitPosition(leadershipTermId, logPosition, leaderId, memberId);
+            LOGGER.logOnCommitPosition(memberId, leadershipTermId, logPosition, leaderMemberId);
         }
     }
 
     static class AddPassiveMember
     {
         @Advice.OnMethodEnter
-        static void logAddPassiveMember(
+        static void logOnAddPassiveMember(
+            final int memberId,
             final long correlationId,
-            final String passiveMember,
-            final int memberId)
+            final String passiveMember)
         {
-            LOGGER.logAddPassiveMember(correlationId, passiveMember, memberId);
+            LOGGER.logOnAddPassiveMember(memberId, correlationId, passiveMember);
         }
     }
 
@@ -268,7 +283,36 @@ class ClusterInterceptor
         @Advice.OnMethodEnter
         static <E extends Enum<E>> void logStateChange(final E oldState, final E newState, final int memberId)
         {
-            LOGGER.logStateChange(DYNAMIC_JOIN_STATE_CHANGE, oldState, newState, memberId);
+            LOGGER.logStateChange(DYNAMIC_JOIN_STATE_CHANGE, memberId, oldState, newState);
         }
     }
+
+    static class ClusterBackupStateChange
+    {
+        @Advice.OnMethodEnter
+        static <E extends Enum<E>> void logStateChange(final E oldState, final E newState, final long nowMs)
+        {
+            LOGGER.logStateChange(CLUSTER_BACKUP_STATE_CHANGE, Aeron.NULL_VALUE, oldState, newState);
+        }
+    }
+
+    static class TerminationPosition
+    {
+        @Advice.OnMethodEnter
+        static void logOnTerminationPosition(final int memberId, final long leadershipTermId, final long position)
+        {
+            LOGGER.logTerminationPosition(memberId, leadershipTermId, position);
+        }
+    }
+
+    static class TerminationAck
+    {
+        @Advice.OnMethodEnter
+        static void logOnTerminationAck(
+            final int memberId, final long leadershipTermId, final long position, final int senderMemberId)
+        {
+            LOGGER.logTerminationAck(memberId, leadershipTermId, position, senderMemberId);
+        }
+    }
+
 }

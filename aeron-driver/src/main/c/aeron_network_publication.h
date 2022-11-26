@@ -92,26 +92,28 @@ typedef struct aeron_network_publication_stct
     size_t position_bits_to_shift;
     size_t mtu_length;
     size_t max_messages_per_send;
+    size_t current_messages_per_send;
     bool is_exclusive;
     bool spies_simulate_connection;
     bool signal_eos;
     bool is_setup_elicited;
     bool has_initial_connection;
-    bool has_receivers;
-    bool has_spies;
-    bool is_connected;
-    bool is_end_of_stream;
+    volatile bool has_receivers;
+    volatile bool has_spies;
+    volatile bool is_connected;
+    volatile bool is_end_of_stream;
     bool track_sender_limits;
-    bool has_sender_released;
+    volatile bool has_sender_released;
+    volatile bool has_received_sm_eos;
     aeron_raw_log_close_func_t raw_log_close_func;
     aeron_raw_log_free_func_t raw_log_free_func;
     aeron_untethered_subscription_state_change_func_t untethered_subscription_state_change_func;
 
-    int64_t *short_sends_counter;
-    int64_t *heartbeats_sent_counter;
-    int64_t *sender_flow_control_limits_counter;
-    int64_t *retransmits_sent_counter;
-    int64_t *unblocked_publications_counter;
+    volatile int64_t *short_sends_counter;
+    volatile int64_t *heartbeats_sent_counter;
+    volatile int64_t *sender_flow_control_limits_counter;
+    volatile int64_t *retransmits_sent_counter;
+    volatile int64_t *unblocked_publications_counter;
 }
 aeron_network_publication_t;
 
@@ -165,7 +167,7 @@ int aeron_network_publication_update_pub_lmt(aeron_network_publication_t *public
 void aeron_network_publication_check_for_blocked_publisher(
     aeron_network_publication_t *publication, int64_t now_ns, int64_t producer_position, int64_t snd_pos);
 
-inline void aeron_network_publication_add_subscriber_hook(void *clientd, int64_t *value_addr)
+inline void aeron_network_publication_add_subscriber_hook(void *clientd, volatile int64_t *value_addr)
 {
     aeron_network_publication_t *publication = (aeron_network_publication_t *)clientd;
 
@@ -177,7 +179,7 @@ inline void aeron_network_publication_add_subscriber_hook(void *clientd, int64_t
     }
 }
 
-inline void aeron_network_publication_remove_subscriber_hook(void *clientd, int64_t *value_addr)
+inline void aeron_network_publication_remove_subscriber_hook(void *clientd, volatile int64_t *value_addr)
 {
     aeron_network_publication_t *publication = (aeron_network_publication_t *)clientd;
 

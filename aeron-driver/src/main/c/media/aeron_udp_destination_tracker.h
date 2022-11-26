@@ -50,7 +50,8 @@ typedef struct aeron_udp_destination_tracker_stct
     aeron_clock_cache_t *cached_clock;
     int64_t destination_timeout_ns;
     aeron_udp_channel_data_paths_t *data_paths;
-    int64_t *num_destinations_addr;
+    volatile int64_t *num_destinations_addr;
+    int round_robin_index;
 }
 aeron_udp_destination_tracker_t;
 
@@ -96,6 +97,22 @@ inline void aeron_udp_destination_tracker_set_counter(
     aeron_udp_destination_tracker_t *tracker, aeron_atomic_counter_t *counter)
 {
     tracker->num_destinations_addr = counter->value_addr;
+}
+
+inline bool aeron_udp_destination_tracker_should_abort_send(
+    struct iovec *iov, size_t iov_length, int send_result, const int64_t *bytes_sent)
+{
+    if (iov_length > 1)
+    {
+        return send_result < (int)iov_length ? true : false;
+    }
+    else if (1 == send_result)
+    {
+        return *bytes_sent < (int64_t)iov->iov_len ? true : false;
+    }
+
+    /* do not abort on an uncaught error */
+    return false;
 }
 
 #endif //AERON_UDP_DESTINATION_TRACKER_H

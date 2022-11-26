@@ -15,15 +15,20 @@
  */
 package io.aeron.cluster;
 
-import io.aeron.*;
-import io.aeron.cluster.service.ClusterClock;
+import io.aeron.BufferBuilder;
+import io.aeron.Image;
 import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.codecs.*;
+import io.aeron.cluster.service.ClusterClock;
 import io.aeron.logbuffer.ControlledFragmentHandler;
 import io.aeron.logbuffer.Header;
-import org.agrona.*;
+import org.agrona.BitUtil;
+import org.agrona.CloseHelper;
+import org.agrona.DirectBuffer;
+import org.agrona.ErrorHandler;
 
 import static io.aeron.logbuffer.FrameDescriptor.*;
+import static io.aeron.protocol.DataHeaderFlyweight.HEADER_LENGTH;
 
 final class LogAdapter implements ControlledFragmentHandler
 {
@@ -51,8 +56,11 @@ final class LogAdapter implements ControlledFragmentHandler
     {
         if (null != image)
         {
+            final long subscriptionRegistrationId = image.subscription().registrationId();
+
             logPosition = image.position();
             CloseHelper.close(errorHandler, image.subscription());
+            consensusModuleAgent.awaitNoLocalSocketAddresses(subscriptionRegistrationId);
             image = null;
         }
     }
@@ -125,34 +133,39 @@ final class LogAdapter implements ControlledFragmentHandler
         {
             action = onMessage(buffer, offset, header);
         }
-        else
+        else if ((flags & BEGIN_FRAG_FLAG) == BEGIN_FRAG_FLAG)
         {
-            if ((flags & BEGIN_FRAG_FLAG) == BEGIN_FRAG_FLAG)
+            builder.reset()
+                .append(buffer, offset, length)
+                .nextTermOffset(BitUtil.align(offset + length + HEADER_LENGTH, FRAME_ALIGNMENT));
+        }
+        else if (offset == builder.nextTermOffset())
+        {
+            final int limit = builder.limit();
+
+            builder.append(buffer, offset, length);
+
+            if ((flags & END_FRAG_FLAG) == END_FRAG_FLAG)
             {
-                builder.reset().append(buffer, offset, length);
+                action = onMessage(builder.buffer(), 0, header);
+
+                if (Action.ABORT == action)
+                {
+                    builder.limit(limit);
+                }
+                else
+                {
+                    builder.reset();
+                }
             }
             else
             {
-                final int limit = builder.limit();
-                if (limit > 0)
-                {
-                    builder.append(buffer, offset, length);
-
-                    if ((flags & END_FRAG_FLAG) == END_FRAG_FLAG)
-                    {
-                        action = onMessage(builder.buffer(), 0, header);
-
-                        if (Action.ABORT == action)
-                        {
-                            builder.limit(limit);
-                        }
-                        else
-                        {
-                            builder.reset();
-                        }
-                    }
-                }
+                builder.nextTermOffset(BitUtil.align(offset + length + HEADER_LENGTH, FRAME_ALIGNMENT));
             }
+        }
+        else
+        {
+            builder.reset();
         }
 
         return action;

@@ -35,6 +35,8 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 
+import static io.aeron.archive.Archive.Configuration.LIVENESS_TIMEOUT_MS;
+
 /**
  * Used to mark the presence of a running {@link Archive} in a directory to guard it.
  */
@@ -85,7 +87,7 @@ public class ArchiveMarkFile implements AutoCloseable
             alignedTotalFileLength(ctx),
             ctx.errorBufferLength(),
             ctx.epochClock(),
-            0);
+            LIVENESS_TIMEOUT_MS);
 
         encode(ctx);
         updateActivityTimestamp(ctx.epochClock().time());
@@ -102,7 +104,7 @@ public class ArchiveMarkFile implements AutoCloseable
 
         markFile = new MarkFile(
             file,
-            file.exists(),
+            markFileExists,
             MarkFileHeaderDecoder.versionEncodingOffset(),
             MarkFileHeaderDecoder.activityTimestampEncodingOffset(),
             totalFileLength,
@@ -126,13 +128,23 @@ public class ArchiveMarkFile implements AutoCloseable
         headerEncoder.wrap(buffer, 0);
         headerDecoder.wrap(buffer, 0, MarkFileHeaderDecoder.BLOCK_LENGTH, MarkFileHeaderDecoder.SCHEMA_VERSION);
 
-        if (markFileExists && headerDecoder.errorBufferLength() > 0)
+        if (markFileExists)
         {
-            final UnsafeBuffer existingErrorBuffer = new UnsafeBuffer(
-                buffer, headerDecoder.headerLength(), headerDecoder.errorBufferLength());
+            if (buffer.capacity() != totalFileLength)
+            {
+                throw new ArchiveException(
+                    "ArchiveMarkFile capacity=" + buffer.capacity() + " < expectedCapacity=" + totalFileLength);
+            }
 
-            saveExistingErrors(file, existingErrorBuffer, CommonContext.fallbackLogger());
-            existingErrorBuffer.setMemory(0, headerDecoder.errorBufferLength(), (byte)0);
+            final int existingErrorBufferLength = headerDecoder.errorBufferLength();
+            if (existingErrorBufferLength > 0)
+            {
+                final UnsafeBuffer existingErrorBuffer = new UnsafeBuffer(
+                    buffer, headerDecoder.headerLength(), existingErrorBufferLength);
+
+                saveExistingErrors(file, existingErrorBuffer, CommonContext.fallbackLogger());
+                existingErrorBuffer.setMemory(0, existingErrorBufferLength, (byte)0);
+            }
         }
 
         headerEncoder.pid(SystemUtil.getPid());
@@ -307,12 +319,13 @@ public class ArchiveMarkFile implements AutoCloseable
             (4 * VarAsciiEncodingEncoder.lengthEncodingLength()) +
             ctx.controlChannel().length() +
             ctx.localControlChannel().length() +
-            ctx.recordingEventsChannel().length() +
+            (null != ctx.recordingEventsChannel() ? ctx.recordingEventsChannel().length() : 0) +
             ctx.aeronDirectoryName().length();
 
         if (headerLength > HEADER_LENGTH)
         {
-            throw new ArchiveException("ArchiveMarkFile required headerLength=" + headerLength + " > " + HEADER_LENGTH);
+            throw new ArchiveException(
+                "ArchiveMarkFile headerLength=" + headerLength + " > headerLengthCapacity=" + HEADER_LENGTH);
         }
 
         return HEADER_LENGTH + ctx.errorBufferLength();

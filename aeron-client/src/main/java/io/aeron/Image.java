@@ -36,7 +36,7 @@ import static java.nio.ByteOrder.LITTLE_ENDIAN;
  * Each {@link Image} identifies a source {@link Publication} by {@link #sessionId()}.
  * <p>
  * By default, fragmented messages are not reassembled before delivery. If an application must
- * receive whole messages, whether or not they were fragmented, then the Subscriber
+ * receive whole messages, whether they were fragmented or not, then the Subscriber
  * should be created with a {@link FragmentAssembler} or a custom implementation.
  * <p>
  * It is an application's responsibility to {@link #poll} the {@link Image} for new messages.
@@ -258,7 +258,7 @@ public final class Image
 
     /**
      * Count of observed active transports within the image liveness timeout.
-     *
+     * <p>
      * If the image is closed, then this is 0. This may also be 0 if no actual datagrams have arrived. IPC
      * Images also will be 0.
      *
@@ -380,6 +380,7 @@ public final class Image
                 {
                     break;
                 }
+
                 if (COMMIT == action)
                 {
                     initialPosition += (offset - initialOffset);
@@ -425,8 +426,13 @@ public final class Image
             return 0;
         }
 
-        int fragmentsRead = 0;
         final long initialPosition = subscriberPosition.get();
+        if (initialPosition >= limitPosition)
+        {
+            return 0;
+        }
+
+        int fragmentsRead = 0;
         final int initialOffset = (int)initialPosition & termLengthMask;
         int offset = initialOffset;
         final UnsafeBuffer termBuffer = activeTermBuffer(initialPosition);
@@ -496,8 +502,13 @@ public final class Image
             return 0;
         }
 
-        int fragmentsRead = 0;
         long initialPosition = subscriberPosition.get();
+        if (initialPosition >= limitPosition)
+        {
+            return 0;
+        }
+
+        int fragmentsRead = 0;
         int initialOffset = (int)initialPosition & termLengthMask;
         int offset = initialOffset;
         final UnsafeBuffer termBuffer = activeTermBuffer(initialPosition);
@@ -541,6 +552,7 @@ public final class Image
                 {
                     break;
                 }
+
                 if (COMMIT == action)
                 {
                     initialPosition += (offset - initialOffset);

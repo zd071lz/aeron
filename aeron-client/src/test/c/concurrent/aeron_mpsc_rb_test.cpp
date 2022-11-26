@@ -25,6 +25,7 @@
 extern "C"
 {
 #include "concurrent/aeron_mpsc_rb.h"
+#include "util/aeron_error.h"
 }
 
 #undef max
@@ -63,7 +64,19 @@ TEST_F(MpscRbTest, shouldErrorForCapacityNotPowerOfTwo)
 {
     aeron_mpsc_rb_t rb;
 
-    EXPECT_EQ(aeron_mpsc_rb_init(&rb, m_buffer.data(), m_buffer.size() - 1), -1);
+    ASSERT_EQ(aeron_mpsc_rb_init(&rb, m_buffer.data(), m_buffer.size() - 1), -1);
+}
+
+TEST_F(MpscRbTest, shouldErrorForCapacityLessThanTheMinCapacity)
+{
+    aeron_mpsc_rb_t rb;
+    const size_t capacity = (AERON_MPSC_RB_MIN_CAPACITY / 2);
+
+    ASSERT_EQ(aeron_mpsc_rb_init(&rb, m_buffer.data(), AERON_RB_TRAILER_LENGTH + capacity), -1);
+    ASSERT_EQ(aeron_errcode(), EINVAL);
+    const std::string expected_err_msg = "Invalid capacity: " + std::to_string(capacity);
+    const std::string actual_err_msg = std::string(aeron_errmsg());
+    ASSERT_NE(actual_err_msg.find(expected_err_msg), std::string::npos);
 }
 
 TEST_F(MpscRbTest, shouldErrorWhenMaxMessageSizeExceeded)
@@ -72,6 +85,30 @@ TEST_F(MpscRbTest, shouldErrorWhenMaxMessageSizeExceeded)
     ASSERT_EQ(aeron_mpsc_rb_init(&rb, m_buffer.data(), m_buffer.size()), 0);
 
     EXPECT_EQ(aeron_mpsc_rb_write(&rb, MSG_TYPE_ID, m_srcBuffer.data(), rb.max_message_length + 1), AERON_RB_ERROR);
+}
+
+TEST_F(MpscRbTest, shouldErrorWhenMinCapacityIsUsedAndMessageSizeIsNotZero)
+{
+    aeron_mpsc_rb_t rb;
+    ASSERT_EQ(aeron_mpsc_rb_init(&rb, m_buffer.data(), AERON_RB_TRAILER_LENGTH + AERON_MPSC_RB_MIN_CAPACITY), 0);
+
+    EXPECT_EQ(rb.max_message_length, 0);
+    EXPECT_EQ(aeron_mpsc_rb_write(&rb, MSG_TYPE_ID, m_srcBuffer.data(), 1), AERON_RB_ERROR);
+}
+
+TEST_F(MpscRbTest, shouldWriteAnEmptyMessageWhenMinCapacityIsUsed)
+{
+    aeron_mpsc_rb_t rb;
+    ASSERT_EQ(aeron_mpsc_rb_init(&rb, m_buffer.data(), AERON_RB_TRAILER_LENGTH + AERON_MPSC_RB_MIN_CAPACITY), 0);
+
+    EXPECT_EQ(0, rb.max_message_length);
+    EXPECT_EQ(aeron_mpsc_rb_write(&rb, MSG_TYPE_ID, m_srcBuffer.data(), 0), AERON_RB_SUCCESS);
+
+    auto *record = (aeron_rb_record_descriptor_t *)(m_buffer.data());
+
+    EXPECT_EQ(record->length, (int32_t)AERON_RB_RECORD_HEADER_LENGTH);
+    EXPECT_EQ(record->msg_type_id, (int32_t)MSG_TYPE_ID);
+    EXPECT_EQ(rb.descriptor->tail_position, (int64_t)(AERON_RB_ALIGNMENT));
 }
 
 TEST_F(MpscRbTest, shouldErrorWhenMessageTypeIsNegative)
@@ -540,6 +577,195 @@ TEST_F(MpscRbTest, abortShouldReturnZeroUponSuccess)
     auto *record_header = (aeron_rb_record_descriptor_t *)(rb.buffer + (offset - AERON_RB_RECORD_HEADER_LENGTH));
     EXPECT_EQ(AERON_RB_PADDING_MSG_TYPE_ID, record_header->msg_type_id);
     EXPECT_EQ((int32_t)(length + AERON_RB_RECORD_HEADER_LENGTH), record_header->length);
+}
+
+struct aeron_mpsc_rb_control_test_clientd_t
+{
+    int64_t value;
+    aeron_rb_read_action_t action_for_value;
+    int result_index;
+    int64_t results[10];
+};
+
+aeron_rb_read_action_t controlled_read_with_action(int32_t msg_type_id, const void *data, size_t length, void *clientd)
+{
+    aeron_mpsc_rb_control_test_clientd_t* test_clientd = static_cast<aeron_mpsc_rb_control_test_clientd_t *>(clientd);
+    int64_t value = *(int64_t*)data;
+    aeron_rb_read_action_stct action_for_value = value == test_clientd->value ? test_clientd->action_for_value :
+        AERON_RB_CONTINUE;
+
+    test_clientd->results[test_clientd->result_index] = value;
+    test_clientd->result_index++;
+
+    return action_for_value;
+}
+
+TEST_F(MpscRbTest, shouldAbortControlledRead)
+{
+    aeron_mpsc_rb_control_test_clientd_t clientd{ 3, AERON_RB_ABORT, 0, {} };
+
+    AERON_DECL_ALIGNED(buffer_t mpsc_buffer, 16) = {};
+    mpsc_buffer.fill(0);
+
+    aeron_mpsc_rb_t rb;
+    ASSERT_EQ(aeron_mpsc_rb_init(&rb, mpsc_buffer.data(), mpsc_buffer.size()), 0);
+
+    int64_t data = 1;
+    for (int i = 1; i <= 5; i++)
+    {
+        ASSERT_EQ(AERON_RB_SUCCESS, aeron_mpsc_rb_write(&rb, 1, &data, sizeof(data)));
+        data++;
+    }
+
+    EXPECT_EQ(2, aeron_mpsc_rb_controlled_read(&rb, controlled_read_with_action, &clientd, 5));
+    EXPECT_EQ(3, clientd.result_index);
+    EXPECT_EQ(1, clientd.results[0]);
+    EXPECT_EQ(2, clientd.results[1]);
+    EXPECT_EQ(3, clientd.results[2]);
+    EXPECT_EQ(0, clientd.results[3]);
+
+    clientd.action_for_value = AERON_RB_CONTINUE;
+
+    EXPECT_EQ(3, aeron_mpsc_rb_controlled_read(&rb, controlled_read_with_action, &clientd, 5));
+    EXPECT_EQ(6, clientd.result_index);
+    EXPECT_EQ(1, clientd.results[0]);
+    EXPECT_EQ(2, clientd.results[1]);
+    EXPECT_EQ(3, clientd.results[2]);
+    EXPECT_EQ(3, clientd.results[3]);
+    EXPECT_EQ(4, clientd.results[4]);
+    EXPECT_EQ(5, clientd.results[5]);
+    EXPECT_EQ(0, clientd.results[6]);
+}
+
+TEST_F(MpscRbTest, shouldBreakControlledRead)
+{
+    aeron_mpsc_rb_control_test_clientd_t clientd{ 3, AERON_RB_BREAK, 0, {} };
+
+    AERON_DECL_ALIGNED(buffer_t mpsc_buffer, 16) = {};
+    mpsc_buffer.fill(0);
+
+    aeron_mpsc_rb_t rb;
+    ASSERT_EQ(aeron_mpsc_rb_init(&rb, mpsc_buffer.data(), mpsc_buffer.size()), 0);
+
+    int64_t data = 1;
+    for (int i = 1; i <= 5; i++)
+    {
+        ASSERT_EQ(AERON_RB_SUCCESS, aeron_mpsc_rb_write(&rb, 1, &data, sizeof(data)));
+        data++;
+    }
+
+    EXPECT_EQ(3, aeron_mpsc_rb_controlled_read(&rb, controlled_read_with_action, &clientd, 5));
+    EXPECT_EQ(3, clientd.result_index);
+    EXPECT_EQ(1, clientd.results[0]);
+    EXPECT_EQ(2, clientd.results[1]);
+    EXPECT_EQ(3, clientd.results[2]);
+    EXPECT_EQ(0, clientd.results[3]);
+
+    clientd.action_for_value = AERON_RB_CONTINUE;
+
+    EXPECT_EQ(2, aeron_mpsc_rb_controlled_read(&rb, controlled_read_with_action, &clientd, 5));
+    EXPECT_EQ(5, clientd.result_index);
+    EXPECT_EQ(1, clientd.results[0]);
+    EXPECT_EQ(2, clientd.results[1]);
+    EXPECT_EQ(3, clientd.results[2]);
+    EXPECT_EQ(4, clientd.results[3]);
+    EXPECT_EQ(5, clientd.results[4]);
+    EXPECT_EQ(0, clientd.results[5]);
+}
+
+TEST_F(MpscRbTest, shouldContinueControlledRead)
+{
+    aeron_mpsc_rb_control_test_clientd_t clientd{ 3, AERON_RB_CONTINUE, 0, {} };
+
+    AERON_DECL_ALIGNED(buffer_t mpsc_buffer, 16) = {};
+    mpsc_buffer.fill(0);
+
+    aeron_mpsc_rb_t rb;
+    ASSERT_EQ(aeron_mpsc_rb_init(&rb, mpsc_buffer.data(), mpsc_buffer.size()), 0);
+
+    int64_t data = 1;
+    for (int i = 1; i <= 5; i++)
+    {
+        ASSERT_EQ(AERON_RB_SUCCESS, aeron_mpsc_rb_write(&rb, 1, &data, sizeof(data)));
+        data++;
+    }
+
+    EXPECT_EQ(5, aeron_mpsc_rb_controlled_read(&rb, controlled_read_with_action, &clientd, 5));
+    EXPECT_EQ(5, clientd.result_index);
+    EXPECT_EQ(1, clientd.results[0]);
+    EXPECT_EQ(2, clientd.results[1]);
+    EXPECT_EQ(3, clientd.results[2]);
+    EXPECT_EQ(4, clientd.results[3]);
+    EXPECT_EQ(5, clientd.results[4]);
+    EXPECT_EQ(0, clientd.results[5]);
+}
+
+aeron_rb_read_action_t controlled_read_with_commit(int32_t msg_type_id, const void *data, size_t length, void *clientd)
+{
+    aeron_mpsc_rb_t *rb = static_cast<aeron_mpsc_rb_t *>(clientd);
+    int64_t value = *(int64_t*)data;
+
+    aeron_rb_read_action_stct action_for_value = value == 3 ? AERON_RB_COMMIT :
+        AERON_RB_CONTINUE;
+
+    if (value <= 3)
+    {
+        EXPECT_EQ(0, aeron_mpsc_rb_consumer_position(rb));
+    }
+    else
+    {
+        EXPECT_NE(0, aeron_mpsc_rb_consumer_position(rb));
+    }
+
+    return action_for_value;
+}
+
+TEST_F(MpscRbTest, shouldCommitControlledRead)
+{
+    AERON_DECL_ALIGNED(buffer_t mpsc_buffer, 16) = {};
+    mpsc_buffer.fill(0);
+
+    aeron_mpsc_rb_t rb;
+    ASSERT_EQ(aeron_mpsc_rb_init(&rb, mpsc_buffer.data(), mpsc_buffer.size()), 0);
+
+    int64_t data = 1;
+    for (int i = 1; i <= 5; i++)
+    {
+        ASSERT_EQ(AERON_RB_SUCCESS, aeron_mpsc_rb_write(&rb, 1, &data, sizeof(data)));
+        data++;
+    }
+
+    EXPECT_EQ(5, aeron_mpsc_rb_controlled_read(&rb, controlled_read_with_commit, &rb, 5));
+}
+
+TEST_F(MpscRbTest, shouldGetSize)
+{
+    AERON_DECL_ALIGNED(buffer_t mpsc_buffer, 16) = {};
+    mpsc_buffer.fill(0);
+
+    aeron_mpsc_rb_t rb;
+    ASSERT_EQ(aeron_mpsc_rb_init(&rb, mpsc_buffer.data(), mpsc_buffer.size()), 0);
+
+    int64_t data = 1;
+    size_t total_messages = CAPACITY / (AERON_RB_RECORD_HEADER_LENGTH + sizeof(data));
+    ASSERT_EQ(0, aeron_mpsc_rb_size(&rb));
+
+    for (size_t i = 0; i < (total_messages / 2); i++)
+    {
+        ASSERT_EQ(AERON_RB_SUCCESS, aeron_mpsc_rb_write(&rb, 1, &data, sizeof(data)));
+        data++;
+    }
+
+    ASSERT_EQ(CAPACITY / 2, aeron_mpsc_rb_size(&rb));
+
+    aeron_rb_write_result_t result;
+    do
+    {
+        result = aeron_mpsc_rb_write(&rb, 1, &data, sizeof(data));
+    }
+    while (AERON_RB_SUCCESS == result);
+
+    ASSERT_EQ(CAPACITY, aeron_mpsc_rb_size(&rb));
 }
 
 #define NUM_MESSAGES_PER_PUBLISHER (10 * 1000 * 1000)

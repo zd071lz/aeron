@@ -17,6 +17,7 @@ package io.aeron.test.cluster;
 
 import io.aeron.Counter;
 import io.aeron.ExclusivePublication;
+import io.aeron.FragmentAssembler;
 import io.aeron.Image;
 import io.aeron.archive.Archive;
 import io.aeron.archive.client.AeronArchive;
@@ -29,23 +30,32 @@ import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
+import io.aeron.cluster.service.ClusterTerminationException;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.status.SystemCounterDescriptor;
+import io.aeron.exceptions.TimeoutException;
 import io.aeron.logbuffer.BufferClaim;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import io.aeron.test.DataCollector;
+import io.aeron.test.Tests;
 import io.aeron.test.driver.RedirectingNameResolver;
 import io.aeron.test.driver.TestMediaDriver;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
+import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.Hashing;
+import org.agrona.collections.IntArrayList;
+import org.agrona.collections.LongArrayList;
+import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.AgentTerminationException;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersReader;
 
 import java.io.File;
+import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -58,7 +68,7 @@ import static org.agrona.BitUtil.SIZE_OF_INT;
 import static org.agrona.BitUtil.SIZE_OF_LONG;
 import static org.junit.jupiter.api.Assertions.fail;
 
-public class TestNode implements AutoCloseable
+public final class TestNode implements AutoCloseable
 {
     private final Archive archive;
     private final ConsensusModule consensusModule;
@@ -88,14 +98,14 @@ public class TestNode implements AutoCloseable
                 .isIpcIngressAllowed(true)
                 .terminationHook(ClusterTests.terminationHook(
                 context.isTerminationExpected, context.hasMemberTerminated));
-
             consensusModule = ConsensusModule.launch(context.consensusModuleContext);
+            final File baseDir = context.consensusModuleContext.clusterDir().getParentFile();
+            dataCollector.addForCleanup(baseDir);
 
             containers = new ClusteredServiceContainer[services.length];
-            final File baseDir = context.consensusModuleContext.clusterDir().getParentFile();
+            final File servicesDir = new File(baseDir, "services");
             for (int i = 0; i < services.length; i++)
             {
-                final File clusterDir = new File(baseDir, "service" + i);
                 final ClusteredServiceContainer.Context ctx = context.serviceContainerContext.clone();
                 ctx.aeronDirectoryName(aeronDirectoryName)
                     .archiveContext(context.aeronArchiveContext.clone()
@@ -103,13 +113,13 @@ public class TestNode implements AutoCloseable
                         .controlResponseChannel("aeron:ipc"))
                     .terminationHook(ClusterTests.terminationHook(
                         context.isTerminationExpected, context.hasServiceTerminated[i]))
-                    .clusterDir(clusterDir)
+                    .clusterDir(servicesDir)
                     .clusteredService(services[i])
                     .serviceId(i);
                 containers[i] = ClusteredServiceContainer.launch(ctx);
-                dataCollector.add(clusterDir.toPath());
             }
 
+            dataCollector.add(servicesDir.toPath());
             dataCollector.add(consensusModule.context().clusterDir().toPath());
             dataCollector.add(archive.context().archiveDir().toPath());
             dataCollector.add(mediaDriver.context().aeronDirectory().toPath());
@@ -124,7 +134,17 @@ public class TestNode implements AutoCloseable
             {
                 ex.addSuppressed(e);
             }
+
             throw ex;
+        }
+    }
+
+    public void stopServiceContainers()
+    {
+        CloseHelper.closeAll(containers);
+        for (final AtomicBoolean terminationFlag : context.hasServiceTerminated)
+        {
+            terminationFlag.set(true);
         }
     }
 
@@ -147,8 +167,9 @@ public class TestNode implements AutoCloseable
     {
         if (1 != containers.length)
         {
-            throw new IllegalStateException("multiple containers in use");
+            throw new IllegalStateException("container count expected=1 actual=" + containers.length);
         }
+
         return containers[0];
     }
 
@@ -156,8 +177,9 @@ public class TestNode implements AutoCloseable
     {
         if (1 != services.length)
         {
-            throw new IllegalStateException("multiple services in use");
+            throw new IllegalStateException("111 service count expected=1 actual=" + services.length);
         }
+
         return services[0];
     }
 
@@ -175,14 +197,27 @@ public class TestNode implements AutoCloseable
         }
     }
 
-    boolean isClosed()
+    public boolean isClosed()
     {
         return isClosed;
     }
 
     public Cluster.Role role()
     {
-        return Cluster.Role.get(consensusModule.context().clusterNodeRoleCounter());
+        final Counter roleCounter = consensusModule.context().clusterNodeRoleCounter();
+        if (!roleCounter.isClosed())
+        {
+            return Cluster.Role.get(roleCounter);
+        }
+        return Cluster.Role.FOLLOWER;
+    }
+
+    public void awaitElectionState(final ElectionState electionState)
+    {
+        while (electionState() != electionState)
+        {
+            Tests.sleep(1);
+        }
     }
 
     ElectionState electionState()
@@ -243,8 +278,9 @@ public class TestNode implements AutoCloseable
     {
         if (1 != services.length)
         {
-            throw new IllegalStateException("multiple services in use");
+            throw new IllegalStateException("service count expected=1 actual=" + services.length);
         }
+
         return context.hasServiceTerminated[0].get();
     }
 
@@ -255,10 +291,6 @@ public class TestNode implements AutoCloseable
 
     public int index()
     {
-        if (1 != services.length)
-        {
-            throw new IllegalStateException("multiple services in use");
-        }
         return services[0].index();
     }
 
@@ -269,7 +301,22 @@ public class TestNode implements AutoCloseable
 
     public long errors()
     {
-        return countersReader().getCounterValue(SystemCounterDescriptor.ERRORS.id());
+        final CountersReader countersReader = countersReader();
+        long errors = countersReader.getCounterValue(SystemCounterDescriptor.ERRORS.id());
+
+        final AtomicCounter consensusModuleCounter = consensusModule.context().errorCounter();
+        errors += countersReader.getCounterValue(consensusModuleCounter.id());
+
+        for (final ClusteredServiceContainer serviceContainer : containers)
+        {
+            final AtomicCounter serviceErrorCounter = serviceContainer.context().errorCounter();
+            errors += countersReader.getCounterValue(serviceErrorCounter.id());
+        }
+
+        final AtomicCounter archiveErrorCounter = archive.context().errorCounter();
+        errors += countersReader.getCounterValue(archiveErrorCounter.id());
+
+        return errors;
     }
 
     public ClusterMembership clusterMembership()
@@ -324,9 +371,10 @@ public class TestNode implements AutoCloseable
         private volatile boolean hasReceivedUnexpectedMessage = false;
         private volatile Cluster.Role roleChangedTo = null;
         private final AtomicInteger activeSessionCount = new AtomicInteger();
-        private final AtomicInteger messageCount = new AtomicInteger();
+        final AtomicInteger messageCount = new AtomicInteger();
+        final AtomicInteger timerCount = new AtomicInteger();
 
-        TestService index(final int index)
+        public TestService index(final int index)
         {
             this.index = index;
             return this;
@@ -345,6 +393,11 @@ public class TestNode implements AutoCloseable
         public int messageCount()
         {
             return messageCount.get();
+        }
+
+        public int timerCount()
+        {
+            return timerCount.get();
         }
 
         public boolean wasSnapshotTaken()
@@ -435,7 +488,12 @@ public class TestNode implements AutoCloseable
                 throw new IllegalStateException("unexpected message received");
             }
 
-            if (message.equals(ClusterTests.ECHO_IPC_INGRESS_MSG))
+            if (message.equals(ClusterTests.TERMINATE_MSG))
+            {
+                throw new ClusterTerminationException(false);
+            }
+
+            if (message.equals(ClusterTests.ECHO_SERVICE_IPC_INGRESS_MSG))
             {
                 if (null != session)
                 {
@@ -467,6 +525,11 @@ public class TestNode implements AutoCloseable
             }
 
             messageCount.incrementAndGet();
+        }
+
+        public void onTimerEvent(final long correlationId, final long timestamp)
+        {
+            timerCount.incrementAndGet();
         }
 
         public void onTakeSnapshot(final ExclusivePublication snapshotPublication)
@@ -502,6 +565,26 @@ public class TestNode implements AutoCloseable
         public void onRoleChange(final Cluster.Role newRole)
         {
             roleChangedTo = newRole;
+        }
+
+        public void awaitServiceMessageCount(final int messageCount, final Runnable keepAlive, final Object node)
+        {
+            int count;
+            while ((count = messageCount()) < messageCount)
+            {
+                Thread.yield();
+                if (Thread.interrupted())
+                {
+                    throw new TimeoutException("count=" + count + " awaiting=" + messageCount + " node=" + node);
+                }
+
+                if (hasReceivedUnexpectedMessage())
+                {
+                    fail("service received unexpected message");
+                }
+
+                keepAlive.run();
+            }
         }
     }
 
@@ -580,6 +663,298 @@ public class TestNode implements AutoCloseable
         }
     }
 
+    public static class MessageTrackingService extends TestNode.TestService
+    {
+        private static volatile boolean delaySessionMessageProcessing;
+        private static final byte SNAPSHOT_COUNTERS = (byte)1;
+        private static final byte SNAPSHOT_CLIENT_MESSAGES = (byte)2;
+        private static final byte SNAPSHOT_SERVICE_MESSAGES = (byte)3;
+        private static final byte SNAPSHOT_TIMERS = (byte)4;
+        private final int serviceId;
+        private final ExpandableArrayBuffer messageBuffer = new ExpandableArrayBuffer();
+        private final IntArrayList clientMessages = new IntArrayList();
+        private final IntArrayList serviceMessages = new IntArrayList();
+        private final LongArrayList timers = new LongArrayList();
+        private int nextServiceMessageNumber;
+        private long nextTimerCorrelationId;
+
+        public static void delaySessionMessageProcessing(final boolean shouldDelay)
+        {
+            delaySessionMessageProcessing = shouldDelay;
+        }
+
+        public MessageTrackingService(final int serviceId, final int index)
+        {
+            this.serviceId = serviceId;
+            index(index);
+        }
+
+        public IntArrayList clientMessages()
+        {
+            return copy(clientMessages);
+        }
+
+        public IntArrayList serviceMessages()
+        {
+            return copy(serviceMessages);
+        }
+
+        public LongArrayList timers()
+        {
+            return copy(timers);
+        }
+
+        public void onStart(final Cluster cluster, final Image snapshotImage)
+        {
+            nextServiceMessageNumber = 1_000_000 * serviceId;
+            nextTimerCorrelationId = -1L * 1_000_000 * serviceId;
+            clientMessages.clear();
+            serviceMessages.clear();
+            timers.clear();
+            wasSnapshotLoaded = false;
+            this.cluster = cluster;
+            this.idleStrategy = cluster.idleStrategy();
+
+            if (null != snapshotImage)
+            {
+                final FragmentHandler handler =
+                    new FragmentAssembler((buffer, offset, length, header) ->
+                    {
+                        int index = offset;
+                        final byte snapshotType = buffer.getByte(index);
+                        index++;
+                        if (SNAPSHOT_COUNTERS == snapshotType)
+                        {
+                            final int storedServiceId = buffer.getInt(index, LITTLE_ENDIAN);
+                            if (serviceId != storedServiceId)
+                            {
+                                throw new IllegalStateException("Invalid snapshot!");
+                            }
+                            index += SIZE_OF_INT;
+                            messageCount.set(buffer.getInt(index, LITTLE_ENDIAN));
+                            index += SIZE_OF_INT;
+                            timerCount.set(buffer.getInt(index, LITTLE_ENDIAN));
+                            index += SIZE_OF_INT;
+                            nextServiceMessageNumber = buffer.getInt(index, LITTLE_ENDIAN);
+                            index += SIZE_OF_INT;
+                            nextTimerCorrelationId = buffer.getLong(index, LITTLE_ENDIAN);
+                        }
+                        else if (SNAPSHOT_CLIENT_MESSAGES == snapshotType) // client messages
+                        {
+                            restoreMessages(buffer, index, clientMessages);
+                        }
+                        else if (SNAPSHOT_SERVICE_MESSAGES == snapshotType) // service messages
+                        {
+                            restoreMessages(buffer, index, serviceMessages);
+                        }
+                        else if (SNAPSHOT_TIMERS == snapshotType) // timers
+                        {
+                            restoreTimers(buffer, index);
+                        }
+                        else
+                        {
+                            throw new IllegalStateException("Unknown snapshot type: " + snapshotType);
+                        }
+                    });
+
+                while (true)
+                {
+                    final int fragments = snapshotImage.poll(handler, 1);
+
+                    if (snapshotImage.isClosed() || snapshotImage.isEndOfStream())
+                    {
+                        break;
+                    }
+
+                    idleStrategy.idle(fragments);
+                }
+                wasSnapshotLoaded = true;
+            }
+        }
+
+        public void onTakeSnapshot(final ExclusivePublication snapshotPublication)
+        {
+            wasSnapshotTaken = false;
+
+            int offset = 0;
+
+            messageBuffer.putByte(offset, SNAPSHOT_COUNTERS);
+            offset++;
+            messageBuffer.putInt(offset, serviceId, LITTLE_ENDIAN);
+            offset += SIZE_OF_INT;
+            messageBuffer.putInt(offset, messageCount(), LITTLE_ENDIAN);
+            offset += SIZE_OF_INT;
+            messageBuffer.putInt(offset, timerCount(), LITTLE_ENDIAN);
+            offset += SIZE_OF_INT;
+            messageBuffer.putInt(offset, nextServiceMessageNumber, LITTLE_ENDIAN);
+            offset += SIZE_OF_INT;
+            messageBuffer.putLong(offset, nextTimerCorrelationId, LITTLE_ENDIAN);
+            offset += SIZE_OF_LONG;
+            idleStrategy.reset();
+            while (snapshotPublication.offer(messageBuffer, 0, offset) < 0)
+            {
+                idleStrategy.idle();
+            }
+
+            snapshotMessages(snapshotPublication, SNAPSHOT_CLIENT_MESSAGES, clientMessages);
+            snapshotMessages(snapshotPublication, SNAPSHOT_SERVICE_MESSAGES, serviceMessages);
+            snapshotTimers(snapshotPublication);
+
+            wasSnapshotTaken = true;
+        }
+
+        public void onSessionMessage(
+            final ClientSession session,
+            final long timestamp,
+            final DirectBuffer buffer,
+            final int offset,
+            final int length,
+            final Header header)
+        {
+            if (delaySessionMessageProcessing)
+            {
+                Tests.sleep(1);
+            }
+
+            if (null != session)
+            {
+                final int messageId = buffer.getInt(offset, LITTLE_ENDIAN);
+                clientMessages.addInt(messageId);
+
+                // Send 3 service messages
+                for (int i = 0; i < 3; i++)
+                {
+                    messageBuffer.putInt(0, ++nextServiceMessageNumber, LITTLE_ENDIAN);
+
+                    idleStrategy.reset();
+                    while (cluster.offer(messageBuffer, 0, SIZE_OF_INT) < 0)
+                    {
+                        idleStrategy.idle();
+                    }
+                }
+
+                // Schedule two timers
+                for (int i = 0; i < 2; i++)
+                {
+                    final long timerId = --nextTimerCorrelationId;
+                    idleStrategy.reset();
+                    while (!cluster.scheduleTimer(timerId, cluster.time() - 1))
+                    {
+                        idleStrategy.idle();
+                    }
+                }
+
+                // Echo input message back to the client
+                while (session.offer(buffer, offset, length) < 0)
+                {
+                    idleStrategy.idle();
+                }
+            }
+            else
+            {
+                final int serviceMessageId = buffer.getInt(offset, LITTLE_ENDIAN);
+                serviceMessages.addInt(serviceMessageId);
+            }
+            messageCount.incrementAndGet(); // count all messages
+        }
+
+        public void onTimerEvent(final long correlationId, final long timestamp)
+        {
+            timers.add(correlationId);
+            super.onTimerEvent(correlationId, timestamp);
+        }
+
+        public String toString()
+        {
+            return "MessageTrackingService{" +
+                "serviceId=" + serviceId +
+                ", messageCount=" + messageCount() +
+                ", timerCount=" + timerCount() +
+                ", nextServiceMessageNumber=" + nextServiceMessageNumber +
+                ", nextTimerCorrelationId=" + nextTimerCorrelationId +
+                '}';
+        }
+
+        private void snapshotMessages(
+            final ExclusivePublication snapshotPublication, final byte snapshotType, final IntArrayList messages)
+        {
+            final MutableInteger offset = new MutableInteger();
+            messageBuffer.putByte(offset.get(), snapshotType);
+            offset.increment();
+            messageBuffer.putInt(offset.get(), messages.size(), LITTLE_ENDIAN);
+            offset.addAndGet(SIZE_OF_INT);
+
+            messages.forEachInt((messageId) ->
+            {
+                messageBuffer.putInt(offset.get(), messageId);
+                offset.addAndGet(SIZE_OF_INT);
+            });
+
+            idleStrategy.reset();
+            while (snapshotPublication.offer(messageBuffer, 0, offset.get()) < 0)
+            {
+                idleStrategy.idle();
+            }
+        }
+
+        private void snapshotTimers(final ExclusivePublication snapshotPublication)
+        {
+            final MutableInteger offset = new MutableInteger();
+            messageBuffer.putByte(offset.get(), SNAPSHOT_TIMERS);
+            offset.increment();
+            messageBuffer.putInt(offset.get(), timers.size(), LITTLE_ENDIAN);
+            offset.addAndGet(SIZE_OF_INT);
+
+            timers.forEachLong((correlationId) ->
+            {
+                messageBuffer.putLong(offset.get(), correlationId);
+                offset.addAndGet(SIZE_OF_LONG);
+            });
+
+            idleStrategy.reset();
+            while (snapshotPublication.offer(messageBuffer, 0, offset.get()) < 0)
+            {
+                idleStrategy.idle();
+            }
+        }
+
+        private void restoreMessages(final DirectBuffer buffer, final int offset, final IntArrayList messages)
+        {
+            int absoluteOffset = offset;
+            final int count = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+            absoluteOffset += SIZE_OF_INT;
+            for (int i = 0; i < count; i++)
+            {
+                final int messageId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+                absoluteOffset += SIZE_OF_INT;
+                messages.addInt(messageId);
+            }
+        }
+
+        private void restoreTimers(final DirectBuffer buffer, final int offset)
+        {
+            int absoluteOffset = offset;
+            final int count = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+            absoluteOffset += SIZE_OF_INT;
+            for (int i = 0; i < count; i++)
+            {
+                final long correlationId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
+                absoluteOffset += SIZE_OF_LONG;
+                timers.add(correlationId);
+            }
+        }
+
+        private static IntArrayList copy(final IntArrayList values)
+        {
+            return new IntArrayList(values.toIntArray(), values.size(), values.nullValue());
+        }
+
+        private static LongArrayList copy(final LongArrayList values)
+        {
+            return new LongArrayList(values.toLongArray(), values.size(), values.nullValue());
+        }
+    }
+
     static class Context
     {
         final MediaDriver.Context mediaDriverContext = new MediaDriver.Context();
@@ -607,7 +982,9 @@ public class TestNode implements AutoCloseable
     public String toString()
     {
         return "TestNode{" +
-            "consensusModule=" + consensusModule +
+            "memberId=" + index() +
+            ", role=" + role() +
+            ", services=" + Arrays.toString(services) +
             '}';
     }
 }

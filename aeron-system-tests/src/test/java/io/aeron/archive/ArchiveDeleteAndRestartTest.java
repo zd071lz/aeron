@@ -22,10 +22,7 @@ import io.aeron.archive.codecs.SourceLocation;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import io.aeron.samples.archive.RecordingDescriptorCollector;
-import io.aeron.test.InterruptAfter;
-import io.aeron.test.InterruptingTestCallback;
-import io.aeron.test.SystemTestWatcher;
-import io.aeron.test.Tests;
+import io.aeron.test.*;
 import io.aeron.test.driver.TestMediaDriver;
 import org.agrona.CloseHelper;
 import org.agrona.SystemUtil;
@@ -44,7 +41,7 @@ import java.util.Random;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 @ExtendWith(InterruptingTestCallback.class)
-public class ArchiveDeleteAndRestartTest
+class ArchiveDeleteAndRestartTest
 {
     private static final int SYNC_LEVEL = 0;
     private static final int STREAM_ID = 1;
@@ -52,10 +49,10 @@ public class ArchiveDeleteAndRestartTest
     private final long seed = System.nanoTime();
 
     @RegisterExtension
-    public final TestWatcher randomSeedWatcher = Tests.seedWatcher(seed);
+    final TestWatcher randomSeedWatcher = Tests.seedWatcher(seed);
 
     @RegisterExtension
-    public final SystemTestWatcher systemTestWatcher = new SystemTestWatcher();
+    final SystemTestWatcher systemTestWatcher = new SystemTestWatcher();
 
     private TestMediaDriver driver;
     private Archive archive;
@@ -64,9 +61,8 @@ public class ArchiveDeleteAndRestartTest
     private Archive.Context archiveContext;
 
     @BeforeEach
-    public void before()
+    void before()
     {
-
         final Random rnd = new Random();
         rnd.setSeed(seed);
 
@@ -80,7 +76,7 @@ public class ArchiveDeleteAndRestartTest
             .spiesSimulateConnection(true)
             .dirDeleteOnStart(true);
 
-        archiveContext = new Archive.Context()
+        archiveContext = TestContexts.localhostArchive()
             .catalogCapacity(ArchiveSystemTests.CATALOG_CAPACITY)
             .fileSyncLevel(SYNC_LEVEL)
             .deleteArchiveOnStart(true)
@@ -103,19 +99,19 @@ public class ArchiveDeleteAndRestartTest
     }
 
     @AfterEach
-    public void after()
+    void after()
     {
         CloseHelper.closeAll(client, archive, driver);
     }
 
     @InterruptAfter(10)
     @Test
-    public void recordAndReplayExclusivePublication()
+    void recordAndReplayExclusivePublication()
     {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[1024]);
         buffer.setMemory(0, buffer.capacity(), (byte)'z');
 
-        AeronArchive aeronArchive = AeronArchive.connect(new AeronArchive.Context().aeron(client));
+        AeronArchive aeronArchive = AeronArchive.connect(TestContexts.localhostAeronArchive().aeron(client));
 
         final String uri = "aeron:ipc?term-length=16m|init-term-id=502090867|term-offset=0|term-id=502090867";
         final ExclusivePublication recordedPublication1 = client.addExclusivePublication(uri, STREAM_ID);
@@ -156,7 +152,7 @@ public class ArchiveDeleteAndRestartTest
         archive.context().deleteDirectory();
 
         archive = Archive.launch(archiveContext.clone());
-        aeronArchive = AeronArchive.connect(new AeronArchive.Context().aeron(client));
+        aeronArchive = AeronArchive.connect(TestContexts.localhostAeronArchive().aeron(client));
 
         final ExclusivePublication recordedPublication2 = client.addExclusivePublication(uri, STREAM_ID);
         aeronArchive.startRecording(uri, STREAM_ID, SourceLocation.LOCAL);

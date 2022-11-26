@@ -18,21 +18,23 @@ package io.aeron.driver;
 import io.aeron.ErrorCode;
 import io.aeron.command.*;
 import io.aeron.exceptions.ControlProtocolException;
+import io.aeron.exceptions.StorageSpaceException;
 import org.agrona.ErrorHandler;
 import org.agrona.MutableDirectBuffer;
-import org.agrona.concurrent.MessageHandler;
+import org.agrona.concurrent.ControlledMessageHandler;
 import org.agrona.concurrent.ringbuffer.RingBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
 
 import static io.aeron.ChannelUri.SPY_QUALIFIER;
 import static io.aeron.CommonContext.IPC_CHANNEL;
 import static io.aeron.ErrorCode.GENERIC_ERROR;
+import static io.aeron.ErrorCode.STORAGE_SPACE;
 import static io.aeron.command.ControlProtocolEvents.*;
 
 /**
  * Receives commands from Aeron clients and dispatches them to the {@link DriverConductor} for processing.
  */
-final class ClientCommandAdapter implements MessageHandler
+final class ClientCommandAdapter implements ControlledMessageHandler
 {
     private final PublicationMessageFlyweight publicationMsgFlyweight = new PublicationMessageFlyweight();
     private final SubscriptionMessageFlyweight subscriptionMsgFlyweight = new SubscriptionMessageFlyweight();
@@ -63,16 +65,22 @@ final class ClientCommandAdapter implements MessageHandler
 
     int receive()
     {
-        return toDriverCommands.read(this, Configuration.COMMAND_DRAIN_LIMIT);
+        return toDriverCommands.controlledRead(this, Configuration.COMMAND_DRAIN_LIMIT);
     }
 
     /**
      * {@inheritDoc}
      */
     @SuppressWarnings("MethodLength")
-    public void onMessage(final int msgTypeId, final MutableDirectBuffer buffer, final int index, final int length)
+    public ControlledMessageHandler.Action onMessage(
+        final int msgTypeId, final MutableDirectBuffer buffer, final int index, final int length)
     {
         long correlationId = 0;
+
+        if (conductor.notAcceptingClientCommands())
+        {
+            return Action.ABORT;
+        }
 
         try
         {
@@ -270,12 +278,26 @@ final class ClientCommandAdapter implements MessageHandler
             recordError(ex);
             clientProxy.onError(correlationId, ex.errorCode(), ex.getMessage());
         }
+        catch (final StorageSpaceException ex)
+        {
+            recordError(ex);
+            clientProxy.onError(correlationId, STORAGE_SPACE, ex.getMessage());
+        }
         catch (final Exception ex)
         {
             recordError(ex);
-            final String errorMessage = ex.getClass().getName() + " : " + ex.getMessage();
-            clientProxy.onError(correlationId, GENERIC_ERROR, errorMessage);
+            if (StorageSpaceException.isStorageSpaceError(ex))
+            {
+                clientProxy.onError(correlationId, STORAGE_SPACE, ex.getMessage());
+            }
+            else
+            {
+                final String errorMessage = ex.getClass().getName() + " : " + ex.getMessage();
+                clientProxy.onError(correlationId, GENERIC_ERROR, errorMessage);
+            }
         }
+
+        return Action.CONTINUE;
     }
 
     private void addPublication(final long correlationId, final boolean isExclusive)

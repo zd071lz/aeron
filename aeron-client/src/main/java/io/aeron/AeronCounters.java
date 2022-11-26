@@ -15,7 +15,9 @@
  */
 package io.aeron;
 
+import io.aeron.exceptions.ConfigurationException;
 import io.aeron.status.ChannelEndpointStatus;
+import org.agrona.concurrent.status.CountersReader;
 
 /**
  * This class serves as a registry for all counter type IDs used by Aeron.
@@ -121,6 +123,16 @@ public final class AeronCounters
      */
     public static final int DRIVER_LOCAL_SOCKET_ADDRESS_STATUS_TYPE_ID = 14;
 
+    /*
+     * Count of number of active receivers for flow control strategy.
+     */
+    public static final int FLOW_CONTROL_RECEIVERS_COUNTER_TYPE_ID = 17;
+
+    /*
+     * Count of number of destinations for multi-destination cast channels.
+     */
+    public static final int MDC_DESTINATIONS_COUNTER_TYPE_ID = 18;
+
     // Archive counters
     /**
      * The position a recording has reached when being archived.
@@ -136,6 +148,17 @@ public final class AeronCounters
      * The type id of the {@link Counter} used for keeping track of the count of concurrent control sessions.
      */
     public static final int ARCHIVE_CONTROL_SESSIONS_TYPE_ID = 102;
+
+    /**
+     * The type id of the {@link Counter} used for keeping track of the max duty cycle time of an archive agent.
+     */
+    public static final int ARCHIVE_MAX_CYCLE_TIME_TYPE_ID = 103;
+
+    /**
+     * The type id of the {@link Counter} used for keeping track of the count of cycle time threshold exceeded of
+     * an archive agent.
+     */
+    public static final int ARCHIVE_CYCLE_TIME_THRESHOLD_EXCEEDED_TYPE_ID = 104;
 
     // Cluster counters
 
@@ -214,7 +237,134 @@ public final class AeronCounters
      */
     public static final int CLUSTER_CLUSTERED_SERVICE_ERROR_COUNT_TYPE_ID = 215;
 
+    /**
+     * The type id of the {@link Counter} used for keeping track of the max duty cycle time of the consensus module.
+     */
+    public static final int CLUSTER_MAX_CYCLE_TIME_TYPE_ID = 216;
+
+    /**
+     * The type id of the {@link Counter} used for keeping track of the count of cycle time threshold exceeded of
+     * the consensus module.
+     */
+    public static final int CLUSTER_CYCLE_TIME_THRESHOLD_EXCEEDED_TYPE_ID = 217;
+
+    /**
+     * The type id of the {@link Counter} used for keeping track of the max duty cycle time of the service container.
+     */
+    public static final int CLUSTER_CLUSTERED_SERVICE_MAX_CYCLE_TIME_TYPE_ID = 218;
+
+    /**
+     * The type id of the {@link Counter} used for keeping track of the count of cycle time threshold exceeded of
+     * the service container.
+     */
+    public static final int CLUSTER_CLUSTERED_SERVICE_CYCLE_TIME_THRESHOLD_EXCEEDED_TYPE_ID = 219;
+
+    /**
+     * The type id of the {@link Counter} used for the cluster standby state.
+     */
+    public static final int CLUSTER_STANDBY_STATE_TYPE_ID = 220;
+
+    /**
+     * Counter type id for the clustered service error count.
+     */
+    public static final int CLUSTER_STANDBY_ERROR_COUNT_TYPE_ID = 221;
+
+    /**
+     * Counter type for responses to heartbeat request from the cluster.
+     */
+    public static final int CLUSTER_STANDBY_HEARTBEAT_RESPONSE_COUNT_TYPE_ID = 222;
+
+    /**
+     * Standby control toggle type id
+     */
+    public static final int CLUSTER_STANDBY_CONTROL_TOGGLE_TYPE_ID = 223;
+
+    /**
+     * The type id of the {@link Counter} used for keeping track of the max duty cycle time of the cluster standby.
+     */
+    public static final int CLUSTER_STANDBY_MAX_CYCLE_TIME_TYPE_ID = 227;
+
+    /**
+     * The type id of the {@link Counter} used for keeping track of the count of cycle time threshold exceeded of
+     * the cluster standby.
+     */
+    public static final int CLUSTER_STANDBY_CYCLE_TIME_THRESHOLD_EXCEEDED_TYPE_ID = 228;
+
+    /**
+     * The type id of the {@link Counter} to make visible the memberId that the cluster standby is currently using to
+     * as a source for the cluster log.
+     */
+    public static final int CLUSTER_STANDBY_SOURCE_MEMBER_ID_TYPE_ID = 231;
+
+    /**
+     * Counter type id for the transition module error count.
+     */
+    public static final int TRANSITION_MODULE_ERROR_COUNT_TYPE_ID = 226;
+
+    /**
+     * The type if of the {@link Counter} used for transition module state
+     */
+    public static final int TRANSITION_MODULE_STATE_TYPE_ID = 224;
+
+    /**
+     * Transition module control toggle type id
+     */
+    public static final int TRANSITION_MODULE_CONTROL_TOGGLE_TYPE_ID = 225;
+
+    /**
+     * The type id of the {@link Counter} used for keeping track of the max duty cycle time of the transition module.
+     */
+    public static final int TRANSITION_MODULE_MAX_CYCLE_TIME_TYPE_ID = 229;
+
+    /**
+     * The type id of the {@link Counter} used for keeping track of the count of cycle time threshold exceeded of
+     * the transition module.
+     */
+    public static final int TRANSITION_MODULE_CYCLE_TIME_THRESHOLD_EXCEEDED_TYPE_ID = 230;
+
     private AeronCounters()
     {
+    }
+
+    /**
+     * Checks that the counter specified by {@code counterId} has the counterTypeId that matches the specified value.
+     * If not it will throw a {@link io.aeron.exceptions.ConfigurationException}.
+     *
+     * @param countersReader to look up the counter type id.
+     * @param counterId counter to reference.
+     * @param expectedCounterTypeId the expected type id for the counter.
+     * @throws io.aeron.exceptions.ConfigurationException if the type id does not match.
+     * @throws IllegalArgumentException if the counterId is not valid.
+     */
+    public static void validateCounterTypeId(
+        final CountersReader countersReader,
+        final int counterId,
+        final int expectedCounterTypeId)
+    {
+        final int counterTypeId = countersReader.getCounterTypeId(counterId);
+        if (expectedCounterTypeId != counterTypeId)
+        {
+            throw new ConfigurationException(
+                "The type for counterId=" + counterId + ", typeId=" + counterTypeId + " does not match the expected=" +
+                expectedCounterTypeId);
+        }
+    }
+
+    /**
+     * Convenience overload for {@link AeronCounters#validateCounterTypeId(CountersReader, int, int)}
+     *
+     * @param aeron to resolve a counters' reader.
+     * @param counter to be checked for the appropriate counterTypeId.
+     * @param expectedCounterTypeId the expected type id for the counter.
+     * @throws io.aeron.exceptions.ConfigurationException if the type id does not match.
+     * @throws IllegalArgumentException if the counterId is not valid.
+     * @see AeronCounters#validateCounterTypeId(CountersReader, int, int)
+     */
+    public static void validateCounterTypeId(
+        final Aeron aeron,
+        final Counter counter,
+        final int expectedCounterTypeId)
+    {
+        validateCounterTypeId(aeron.countersReader(), counter.id(), expectedCounterTypeId);
     }
 }

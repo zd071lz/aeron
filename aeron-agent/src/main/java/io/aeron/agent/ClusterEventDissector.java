@@ -17,13 +17,13 @@ package io.aeron.agent;
 
 import io.aeron.protocol.HeaderFlyweight;
 import org.agrona.MutableDirectBuffer;
+import org.agrona.SemanticVersion;
 
 import static io.aeron.agent.ClusterEventCode.ELECTION_STATE_CHANGE;
 import static io.aeron.agent.ClusterEventCode.NEW_LEADERSHIP_TERM;
 import static io.aeron.agent.CommonEventDissector.dissectLogHeader;
 import static java.nio.ByteOrder.LITTLE_ENDIAN;
-import static org.agrona.BitUtil.SIZE_OF_INT;
-import static org.agrona.BitUtil.SIZE_OF_LONG;
+import static org.agrona.BitUtil.*;
 
 final class ClusterEventDissector
 {
@@ -75,6 +75,9 @@ final class ClusterEventDissector
         final int logSessionId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_INT;
 
+        final int appVersion = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
+
         final boolean isStartup = 1 == buffer.getByte(absoluteOffset);
 
         builder.append(": memberId=").append(memberId)
@@ -89,7 +92,18 @@ final class ClusterEventDissector
             .append(" timestamp=").append(timestamp)
             .append(" leaderId=").append(leaderId)
             .append(" logSessionId=").append(logSessionId)
-            .append(" isStartup=").append(isStartup);
+            .append(" appVersion=");
+        appendSemanticVersion(appVersion, builder);
+        builder.append(" isStartup=").append(isStartup);
+    }
+
+    private static void appendSemanticVersion(final int version, final StringBuilder builder)
+    {
+        builder.append(SemanticVersion.major(version))
+            .append('.')
+            .append(SemanticVersion.minor(version))
+            .append('.')
+            .append(SemanticVersion.patch(version));
     }
 
     static void dissectStateChange(
@@ -117,10 +131,6 @@ final class ClusterEventDissector
         int absoluteOffset = offset;
         absoluteOffset += dissectLogHeader(CONTEXT, ELECTION_STATE_CHANGE, buffer, absoluteOffset, builder);
 
-        final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
-        absoluteOffset += SIZE_OF_INT;
-        final int leaderId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
-        absoluteOffset += SIZE_OF_INT;
         final long candidateTermId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_LONG;
         final long leadershipTermId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
@@ -133,6 +143,10 @@ final class ClusterEventDissector
         absoluteOffset += SIZE_OF_LONG;
         final long catchupPosition = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_LONG;
+        final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
+        final int leaderId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
 
         builder.append(": memberId=").append(memberId).append(' ');
         buffer.getStringAscii(absoluteOffset, builder);
@@ -156,16 +170,23 @@ final class ClusterEventDissector
 
         final long logLeadershipTermId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_LONG;
-        final long leadershipTermId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
-        absoluteOffset += SIZE_OF_LONG;
         final long logPosition = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_LONG;
+        final long leadershipTermId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_LONG;
         final int followerMemberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
+        final int protocolVersion = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
+        final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
 
-        builder.append(": logLeadershipTermId=").append(logLeadershipTermId);
-        builder.append(" leadershipTermId=").append(leadershipTermId);
+        builder.append(": memberId=").append(memberId);
+        builder.append(" logLeadershipTermId=").append(logLeadershipTermId);
         builder.append(" logPosition=").append(logPosition);
+        builder.append(" leadershipTermId=").append(leadershipTermId);
         builder.append(" followerMemberId=").append(followerMemberId);
+        builder.append(" protocolVersion=");
+        appendSemanticVersion(protocolVersion, builder);
     }
 
     static void dissectRequestVote(
@@ -184,11 +205,18 @@ final class ClusterEventDissector
         final long candidateTermId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_LONG;
         final int candidateId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
+        final int protocolVersion = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
+        final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
 
-        builder.append(": logLeadershipTermId=").append(logLeadershipTermId);
+        builder.append(": memberId=").append(memberId);
+        builder.append(" logLeadershipTermId=").append(logLeadershipTermId);
         builder.append(" logPosition=").append(logPosition);
         builder.append(" candidateTermId=").append(candidateTermId);
         builder.append(" candidateId=").append(candidateId);
+        builder.append(" protocolVersion=");
+        appendSemanticVersion(protocolVersion, builder);
     }
 
     static void dissectCatchupPosition(
@@ -204,6 +232,8 @@ final class ClusterEventDissector
         absoluteOffset += SIZE_OF_LONG;
         final long logPosition = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_LONG;
+        final int followerMemberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
         final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_INT;
         final int catchupEndpointLength = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
@@ -212,6 +242,7 @@ final class ClusterEventDissector
         builder.append(": memberId=").append(memberId);
         builder.append(" leadershipTermId=").append(leadershipTermId);
         builder.append(" logPosition=").append(logPosition);
+        builder.append(" followerMemberId=").append(followerMemberId);
         builder.append(" catchupEndpoint=");
         buffer.getStringWithoutLengthAscii(absoluteOffset, catchupEndpointLength, builder);
     }
@@ -227,10 +258,13 @@ final class ClusterEventDissector
 
         final long leadershipTermId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_LONG;
+        final int followerMemberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
         final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
 
         builder.append(": memberId=").append(memberId);
         builder.append(" leadershipTermId=").append(leadershipTermId);
+        builder.append(" followerMemberId=").append(followerMemberId);
     }
 
     static void dissectTruncateLogEntry(
@@ -241,9 +275,6 @@ final class ClusterEventDissector
     {
         int absoluteOffset = offset;
         absoluteOffset += dissectLogHeader(CONTEXT, eventCode, buffer, absoluteOffset, builder);
-
-        final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
-        absoluteOffset += SIZE_OF_INT;
 
         final long logLeadershipTermId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_LONG;
@@ -269,6 +300,9 @@ final class ClusterEventDissector
         final long newPosition = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_LONG;
 
+        final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
+
         builder.append(": memberId=").append(memberId);
         builder.append(" state=");
         buffer.getStringAscii(absoluteOffset, builder, LITTLE_ENDIAN);
@@ -291,12 +325,6 @@ final class ClusterEventDissector
         int absoluteOffset = offset;
         absoluteOffset += dissectLogHeader(CONTEXT, eventCode, buffer, absoluteOffset, builder);
 
-        final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
-        absoluteOffset += SIZE_OF_INT;
-
-        final boolean isInElection = 0 != buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
-        absoluteOffset += SIZE_OF_INT;
-
         final long leadershipTermId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_LONG;
 
@@ -309,8 +337,14 @@ final class ClusterEventDissector
         final long termBaseLogPosition = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_LONG;
 
+        final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
+
         final int appVersion = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_INT;
+
+        final boolean isInElection = 0 != buffer.getByte(absoluteOffset);
+        absoluteOffset += SIZE_OF_BYTE;
 
         final int timeUnitLength = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_INT;
@@ -340,6 +374,8 @@ final class ClusterEventDissector
         absoluteOffset += SIZE_OF_LONG;
         final long logPosition = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_LONG;
+        final int followerMemberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
         final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_INT;
         final short flags = (short)(buffer.getByte(absoluteOffset) & 0xFF);
@@ -347,6 +383,7 @@ final class ClusterEventDissector
         builder.append(": memberId=").append(memberId);
         builder.append(" leadershipTermId=").append(leadershipTermId);
         builder.append(" logPosition=").append(logPosition);
+        builder.append(" followerMemberId=").append(followerMemberId);
         builder.append(" flags=0b");
         HeaderFlyweight.appendFlagsAsChars(flags, builder);
     }
@@ -403,28 +440,69 @@ final class ClusterEventDissector
         int absoluteOffset = offset;
         absoluteOffset += dissectLogHeader(CONTEXT, eventCode, buffer, absoluteOffset, builder);
 
-        final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
-        absoluteOffset += SIZE_OF_INT;
         final long sessionId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_LONG;
-        final int closeReasonLength = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        final long leadershipTermId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_LONG;
+        final long timestamp = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_LONG;
+        final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
         absoluteOffset += SIZE_OF_INT;
 
         builder.append(": memberId=").append(memberId);
         builder.append(" sessionId=").append(sessionId);
         builder.append(" closeReason=");
-        absoluteOffset += buffer.getStringWithoutLengthAscii(absoluteOffset, closeReasonLength, builder);
-
-        final long leadershipTermId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
-        absoluteOffset += SIZE_OF_LONG;
-        final long timestamp = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
-        absoluteOffset += SIZE_OF_LONG;
-        final int timeUnitLength = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
-        absoluteOffset += SIZE_OF_INT;
+        absoluteOffset += SIZE_OF_INT + buffer.getStringAscii(absoluteOffset, builder, LITTLE_ENDIAN);
 
         builder.append(" leadershipTermId=").append(leadershipTermId);
         builder.append(" timestamp=").append(timestamp);
         builder.append(" timeUnit=");
-        buffer.getStringWithoutLengthAscii(absoluteOffset, timeUnitLength, builder);
+        buffer.getStringAscii(absoluteOffset, builder, LITTLE_ENDIAN);
+    }
+
+    public static void dissectTerminationPosition(
+        final ClusterEventCode eventCode,
+        final MutableDirectBuffer buffer,
+        final int offset,
+        final StringBuilder builder)
+    {
+        int absoluteOffset = offset;
+        absoluteOffset += dissectLogHeader(CONTEXT, eventCode, buffer, absoluteOffset, builder);
+
+        final long logLeadershipTermId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_LONG;
+        final long position = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_LONG;
+        final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
+
+        builder.append(": memberId=").append(memberId);
+        builder.append(" logLeadershipTermId=").append(logLeadershipTermId);
+        builder.append(" logPosition=").append(position);
+    }
+
+    public static void dissectTerminationAck(
+        final ClusterEventCode eventCode,
+        final MutableDirectBuffer buffer,
+        final int offset,
+        final StringBuilder builder)
+    {
+        int absoluteOffset = offset;
+        absoluteOffset += dissectLogHeader(CONTEXT, eventCode, buffer, absoluteOffset, builder);
+
+        final long logLeadershipTermId = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_LONG;
+        final long position = buffer.getLong(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_LONG;
+        final int memberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
+        final int senderMemberId = buffer.getInt(absoluteOffset, LITTLE_ENDIAN);
+        absoluteOffset += SIZE_OF_INT;
+
+        builder.append(": memberId=").append(memberId);
+        builder.append(" logLeadershipTermId=").append(logLeadershipTermId);
+        builder.append(" logPosition=").append(position);
+        builder.append(" senderMemberId=").append(senderMemberId);
+
     }
 }

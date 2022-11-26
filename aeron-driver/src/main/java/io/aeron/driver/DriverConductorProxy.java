@@ -16,13 +16,14 @@
 package io.aeron.driver;
 
 import io.aeron.driver.media.ReceiveChannelEndpoint;
+import io.aeron.driver.media.ReceiveDestinationTransport;
 import io.aeron.driver.media.SendChannelEndpoint;
 import io.aeron.driver.media.UdpChannel;
 import org.agrona.concurrent.AgentTerminationException;
+import org.agrona.concurrent.QueuedPipe;
 import org.agrona.concurrent.status.AtomicCounter;
 
 import java.net.InetSocketAddress;
-import java.util.Queue;
 
 import static io.aeron.driver.ThreadingMode.INVOKER;
 import static io.aeron.driver.ThreadingMode.SHARED;
@@ -33,13 +34,13 @@ import static io.aeron.driver.ThreadingMode.SHARED;
 public final class DriverConductorProxy
 {
     private final ThreadingMode threadingMode;
-    private final Queue<Runnable> commandQueue;
+    private final QueuedPipe<Runnable> commandQueue;
     private final AtomicCounter failCount;
 
     private DriverConductor driverConductor;
 
     DriverConductorProxy(
-        final ThreadingMode threadingMode, final Queue<Runnable> commandQueue, final AtomicCounter failCount)
+        final ThreadingMode threadingMode, final QueuedPipe<Runnable> commandQueue, final AtomicCounter failCount)
     {
         this.threadingMode = threadingMode;
         this.commandQueue = commandQueue;
@@ -109,6 +110,23 @@ public final class DriverConductorProxy
     }
 
     /**
+     * Close a receive destination.
+     *
+     * @param destinationTransport to be closed
+     */
+    public void closeReceiveDestination(final ReceiveDestinationTransport destinationTransport)
+    {
+        if (notConcurrent())
+        {
+            driverConductor.closeReceiveDestination(destinationTransport);
+        }
+        else
+        {
+            offer(() -> driverConductor.closeReceiveDestination(destinationTransport));
+        }
+    }
+
+    /**
      * Is the driver conductor not concurrent with the sender and receiver threads.
      *
      * @return true if the {@link DriverConductor} is on the same thread as the sender and receiver.
@@ -116,6 +134,15 @@ public final class DriverConductorProxy
     public boolean notConcurrent()
     {
         return threadingMode == SHARED || threadingMode == INVOKER;
+    }
+
+    /**
+     * Get the threading mode of the driver.
+     * @return ThreadingMode of the driver.
+     */
+    public ThreadingMode threadingMode()
+    {
+        return threadingMode;
     }
 
     void driverConductor(final DriverConductor driverConductor)

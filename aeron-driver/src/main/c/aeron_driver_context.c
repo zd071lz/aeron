@@ -328,6 +328,8 @@ static void aeron_driver_conductor_on_endpoint_change_null(const void *channel)
 #define AERON_PUBLICATION_RESERVED_SESSION_ID_HIGH_DEFAULT (1000)
 #define AERON_DRIVER_RERESOLUTION_CHECK_INTERVAL_NS_DEFAULT (1 * 1000 * 1000 * INT64_C(1000))
 #define AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_NS_DEFAULT (1 * 1000 * 1000 * INT64_C(1000))
+#define AERON_DRIVER_SENDER_CYCLE_THRESHOLD_NS_DEFAULT (1 * 1000 * 1000 * INT64_C(1000))
+#define AERON_DRIVER_RECEIVER_CYCLE_THRESHOLD_NS_DEFAULT (1 * 1000 * 1000 * INT64_C(1000))
 #define AERON_RECEIVER_IO_VECTOR_CAPACITY_DEFAULT UINT32_C(2)
 #define AERON_SENDER_IO_VECTOR_CAPACITY_DEFAULT UINT32_C(2)
 #define AERON_SENDER_MAX_MESSAGES_PER_SEND_DEFAULT UINT32_C(2)
@@ -358,6 +360,28 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
     _context->receiver_proxy = NULL;
     _context->counters_manager = NULL;
     _context->error_log = NULL;
+
+    _context->conductor_duty_cycle_tracker = &_context->conductor_duty_cycle_stall_tracker.tracker;
+    _context->conductor_duty_cycle_stall_tracker.tracker.update =
+        aeron_duty_cycle_stall_tracker_update;
+    _context->conductor_duty_cycle_stall_tracker.tracker.measure_and_update =
+        aeron_duty_cycle_stall_tracker_measure_and_update;
+    _context->conductor_duty_cycle_stall_tracker.tracker.state = &_context->conductor_duty_cycle_stall_tracker;
+
+    _context->sender_duty_cycle_tracker = &_context->sender_duty_cycle_stall_tracker.tracker;
+    _context->sender_duty_cycle_stall_tracker.tracker.update =
+        aeron_duty_cycle_stall_tracker_update;
+    _context->sender_duty_cycle_stall_tracker.tracker.measure_and_update =
+        aeron_duty_cycle_stall_tracker_measure_and_update;
+    _context->sender_duty_cycle_stall_tracker.tracker.state = &_context->sender_duty_cycle_stall_tracker;
+
+    _context->receiver_duty_cycle_tracker = &_context->receiver_duty_cycle_stall_tracker.tracker;
+    _context->receiver_duty_cycle_stall_tracker.tracker.update =
+        aeron_duty_cycle_stall_tracker_update;
+    _context->receiver_duty_cycle_stall_tracker.tracker.measure_and_update =
+        aeron_duty_cycle_stall_tracker_measure_and_update;
+    _context->receiver_duty_cycle_stall_tracker.tracker.state = &_context->receiver_duty_cycle_stall_tracker;
+
     _context->udp_channel_outgoing_interceptor_bindings = NULL;
     _context->udp_channel_incoming_interceptor_bindings = NULL;
     _context->dynamic_libs = NULL;
@@ -369,18 +393,44 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
         return -1;
     }
 
-    if (aeron_spsc_concurrent_array_queue_init(&_context->sender_command_queue, AERON_COMMAND_QUEUE_CAPACITY) < 0)
+    const size_t command_rb_capacity = (AERON_COMMAND_RB_CAPACITY * 1024) + AERON_RB_TRAILER_LENGTH;
+
+    void *sender_buffer;
+    if (aeron_alloc(&sender_buffer, command_rb_capacity))
     {
+        AERON_APPEND_ERR("%s", "");
         return -1;
     }
 
-    if (aeron_spsc_concurrent_array_queue_init(&_context->receiver_command_queue, AERON_COMMAND_QUEUE_CAPACITY) < 0)
+    if (aeron_mpsc_rb_init(&_context->sender_command_queue, sender_buffer, command_rb_capacity))
     {
+        AERON_APPEND_ERR("%s", "");
         return -1;
     }
 
-    if (aeron_mpsc_concurrent_array_queue_init(&_context->conductor_command_queue, AERON_COMMAND_QUEUE_CAPACITY) < 0)
+    void *receiver_buffer;
+    if (aeron_alloc(&receiver_buffer, command_rb_capacity))
     {
+        AERON_APPEND_ERR("%s", "");
+        return -1;
+    }
+
+    if (aeron_mpsc_rb_init(&_context->receiver_command_queue, receiver_buffer, command_rb_capacity))
+    {
+        AERON_APPEND_ERR("%s", "");
+        return -1;
+    }
+
+    void *conductor_buffer;
+    if (aeron_alloc(&conductor_buffer, command_rb_capacity))
+    {
+        AERON_APPEND_ERR("%s", "");
+        return -1;
+    }
+
+    if (aeron_mpsc_rb_init(&_context->conductor_command_queue, conductor_buffer, command_rb_capacity))
+    {
+        AERON_APPEND_ERR("%s", "");
         return -1;
     }
 
@@ -473,7 +523,9 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
     _context->resolver_bootstrap_neighbor = NULL;
     _context->name_resolver_init_args = NULL;
     _context->re_resolution_check_interval_ns = AERON_DRIVER_RERESOLUTION_CHECK_INTERVAL_NS_DEFAULT;
-    _context->conductor_cycle_threshold_ns = AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_NS_DEFAULT;
+    _context->conductor_duty_cycle_stall_tracker.cycle_threshold_ns = AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_NS_DEFAULT;
+    _context->sender_duty_cycle_stall_tracker.cycle_threshold_ns = AERON_DRIVER_SENDER_CYCLE_THRESHOLD_NS_DEFAULT;
+    _context->receiver_duty_cycle_stall_tracker.cycle_threshold_ns = AERON_DRIVER_RECEIVER_CYCLE_THRESHOLD_NS_DEFAULT;
     _context->receiver_io_vector_capacity = AERON_RECEIVER_IO_VECTOR_CAPACITY_DEFAULT;
     _context->sender_io_vector_capacity = AERON_SENDER_IO_VECTOR_CAPACITY_DEFAULT;
     _context->network_publication_max_messages_per_send = AERON_SENDER_MAX_MESSAGES_PER_SEND_DEFAULT;
@@ -879,10 +931,24 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
         0,
         INT64_MAX);
 
-    _context->conductor_cycle_threshold_ns = aeron_config_parse_duration_ns(
+    _context->conductor_duty_cycle_stall_tracker.cycle_threshold_ns = aeron_config_parse_duration_ns(
         AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_ENV_VAR,
         getenv(AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_ENV_VAR),
-        _context->conductor_cycle_threshold_ns,
+        _context->conductor_duty_cycle_stall_tracker.cycle_threshold_ns,
+        0,
+        UINT64_C(60) * 60 * 1000 * 1000 * 1000);
+
+    _context->sender_duty_cycle_stall_tracker.cycle_threshold_ns = aeron_config_parse_duration_ns(
+        AERON_DRIVER_SENDER_CYCLE_THRESHOLD_ENV_VAR,
+        getenv(AERON_DRIVER_SENDER_CYCLE_THRESHOLD_ENV_VAR),
+        _context->sender_duty_cycle_stall_tracker.cycle_threshold_ns,
+        0,
+        UINT64_C(60) * 60 * 1000 * 1000 * 1000);
+
+    _context->receiver_duty_cycle_stall_tracker.cycle_threshold_ns = aeron_config_parse_duration_ns(
+        AERON_DRIVER_RECEIVER_CYCLE_THRESHOLD_ENV_VAR,
+        getenv(AERON_DRIVER_RECEIVER_CYCLE_THRESHOLD_ENV_VAR),
+        _context->receiver_duty_cycle_stall_tracker.cycle_threshold_ns,
         0,
         UINT64_C(60) * 60 * 1000 * 1000 * 1000);
 
@@ -1183,16 +1249,9 @@ int aeron_driver_context_close(aeron_driver_context_t *context)
         return -1;
     }
 
-    aeron_mpsc_concurrent_array_queue_drain_all(
-        &context->conductor_command_queue, aeron_driver_context_drain_all_free, context);
-    aeron_spsc_concurrent_array_queue_drain_all(
-        &context->sender_command_queue, aeron_driver_context_drain_all_free, context);
-    aeron_spsc_concurrent_array_queue_drain_all(
-        &context->receiver_command_queue, aeron_driver_context_drain_all_free, context);
-
-    aeron_mpsc_concurrent_array_queue_close(&context->conductor_command_queue);
-    aeron_spsc_concurrent_array_queue_close(&context->sender_command_queue);
-    aeron_spsc_concurrent_array_queue_close(&context->receiver_command_queue);
+    aeron_free(context->conductor_command_queue.buffer);
+    aeron_free(context->sender_command_queue.buffer);
+    aeron_free(context->receiver_command_queue.buffer);
 
     aeron_driver_context_free_bindings(context->udp_channel_outgoing_interceptor_bindings);
     aeron_driver_context_free_bindings(context->udp_channel_incoming_interceptor_bindings);
@@ -2595,18 +2654,91 @@ uint64_t aeron_driver_context_get_re_resolution_check_interval_ns(aeron_driver_c
         context->re_resolution_check_interval_ns : AERON_DRIVER_RERESOLUTION_CHECK_INTERVAL_NS_DEFAULT;
 }
 
+int aeron_driver_context_set_conductor_duty_cycle_tracker(
+    aeron_driver_context_t *context, aeron_duty_cycle_tracker_t *value)
+{
+    AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
+
+    context->conductor_duty_cycle_tracker = value;
+    return 0;
+}
+
+aeron_duty_cycle_tracker_t *aeron_driver_context_get_conductor_duty_cycle_tracker(aeron_driver_context_t *context)
+{
+    return NULL != context ? context->conductor_duty_cycle_tracker : NULL;
+}
+
+int aeron_driver_context_set_sender_duty_cycle_tracker(
+    aeron_driver_context_t *context, aeron_duty_cycle_tracker_t *value)
+{
+    AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
+
+    context->sender_duty_cycle_tracker = value;
+    return 0;
+}
+
+aeron_duty_cycle_tracker_t *aeron_driver_context_get_sender_duty_cycle_tracker(aeron_driver_context_t *context)
+{
+    return NULL != context ? context->sender_duty_cycle_tracker : NULL;
+}
+
+int aeron_driver_context_set_receiver_duty_cycle_tracker(
+    aeron_driver_context_t *context, aeron_duty_cycle_tracker_t *value)
+{
+    AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
+
+    context->receiver_duty_cycle_tracker = value;
+    return 0;
+}
+
+aeron_duty_cycle_tracker_t *aeron_driver_context_get_receiver_duty_cycle_tracker(aeron_driver_context_t *context)
+{
+    return NULL != context ? context->receiver_duty_cycle_tracker : NULL;
+}
+
 int64_t aeron_driver_context_set_conductor_cycle_threshold_ns(aeron_driver_context_t *context, uint64_t value)
 {
     AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
 
-    return context->conductor_cycle_threshold_ns = value;
+    context->conductor_duty_cycle_stall_tracker.cycle_threshold_ns = value;
     return 0;
 }
 
 int64_t aeron_driver_context_get_conductor_cycle_threshold_ns(aeron_driver_context_t *context)
 {
     return NULL != context ?
-        context->conductor_cycle_threshold_ns : AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_NS_DEFAULT;
+        context->conductor_duty_cycle_stall_tracker.cycle_threshold_ns :
+        AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_NS_DEFAULT;
+}
+
+int64_t aeron_driver_context_set_sender_cycle_threshold_ns(aeron_driver_context_t *context, uint64_t value)
+{
+    AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
+
+    context->sender_duty_cycle_stall_tracker.cycle_threshold_ns = value;
+    return 0;
+}
+
+int64_t aeron_driver_context_get_sender_cycle_threshold_ns(aeron_driver_context_t *context)
+{
+    return NULL != context ?
+        context->sender_duty_cycle_stall_tracker.cycle_threshold_ns :
+        AERON_DRIVER_SENDER_CYCLE_THRESHOLD_NS_DEFAULT;
+}
+
+int64_t aeron_driver_context_set_receiver_cycle_threshold_ns(aeron_driver_context_t *context, uint64_t value)
+{
+    AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
+
+    context->receiver_duty_cycle_stall_tracker.cycle_threshold_ns = value;
+    return 0;
+}
+
+int64_t aeron_driver_context_get_receiver_cycle_threshold_ns(aeron_driver_context_t *context)
+{
+    return NULL != context ?
+        context->receiver_duty_cycle_stall_tracker.cycle_threshold_ns :
+        AERON_DRIVER_RECEIVER_CYCLE_THRESHOLD_NS_DEFAULT;
 }
 
 int aeron_driver_context_bindings_clientd_find_first_free_index(aeron_driver_context_t *context)

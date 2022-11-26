@@ -27,10 +27,10 @@ import static java.util.Arrays.asList;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
-public class ChannelUriTest
+class ChannelUriTest
 {
     @Test
-    public void shouldParseSimpleDefaultUri()
+    void shouldParseSimpleDefaultUri()
     {
         assertParseWithMedia("aeron:udp", "udp");
         assertParseWithMedia("aeron:ipc", "ipc");
@@ -38,7 +38,7 @@ public class ChannelUriTest
     }
 
     @Test
-    public void shouldRejectUriWithoutAeronPrefix()
+    void shouldRejectUriWithoutAeronPrefix()
     {
         assertInvalid(":udp");
         assertInvalid("aeron");
@@ -47,31 +47,31 @@ public class ChannelUriTest
     }
 
     @Test
-    public void shouldRejectWithOutOfPlaceColon()
+    void shouldRejectWithOutOfPlaceColon()
     {
         assertInvalid("aeron:udp:");
     }
 
     @Test
-    public void shouldRejectWithInvalidMedia()
+    void shouldRejectWithInvalidMedia()
     {
         assertInvalid("aeron:ipcsdfgfdhfgf");
     }
 
     @Test
-    public void shouldRejectWithMissingQuerySeparatorWhenFollowedWithParams()
+    void shouldRejectWithMissingQuerySeparatorWhenFollowedWithParams()
     {
         assertInvalid("aeron:ipc|sparse=true");
     }
 
     @Test
-    public void shouldRejectWithInvalidParams()
+    void shouldRejectWithInvalidParams()
     {
         assertInvalid("aeron:udp?endpoint=localhost:4652|-~@{]|=??#s!£$%====");
     }
 
     @Test
-    public void shouldParseWithMultipleParameters()
+    void shouldParseWithMultipleParameters()
     {
         assertParseWithParams(
             "aeron:udp?endpoint=224.10.9.8|port=4567|interface=192.168.0.3|ttl=16",
@@ -82,7 +82,7 @@ public class ChannelUriTest
     }
 
     @Test
-    public void shouldAllowReturnDefaultIfParamNotSpecified()
+    void shouldAllowReturnDefaultIfParamNotSpecified()
     {
         final ChannelUri uri = ChannelUri.parse("aeron:udp?endpoint=224.10.9.8");
         assertNull(uri.get("interface"));
@@ -90,7 +90,7 @@ public class ChannelUriTest
     }
 
     @Test
-    public void shouldRoundTripToString()
+    void shouldRoundTripToString()
     {
         final String uriString = "aeron:udp?endpoint=224.10.9.8:777";
         final ChannelUri uri = ChannelUri.parse(uriString);
@@ -100,7 +100,7 @@ public class ChannelUriTest
     }
 
     @Test
-    public void shouldRoundTripToStringBuilder()
+    void shouldRoundTripToStringBuilder()
     {
         final ChannelUriStringBuilder builder = new ChannelUriStringBuilder()
             .media("udp")
@@ -112,7 +112,7 @@ public class ChannelUriTest
     }
 
     @Test
-    public void shouldRoundTripToStringBuilderWithPrefix()
+    void shouldRoundTripToStringBuilderWithPrefix()
     {
         final ChannelUriStringBuilder builder = new ChannelUriStringBuilder()
             .prefix(ChannelUri.SPY_QUALIFIER)
@@ -191,6 +191,35 @@ public class ChannelUriTest
     {
         final String destinationUri = ChannelUri.createDestinationUri(channel, endpoint);
         assertEquals(expected, destinationUri);
+    }
+
+    @Test
+    void shouldSubstituteEndpoint()
+    {
+        assertSubstitution("aeron:udp?endpoint=localhost:12345", "aeron:udp?endpoint=localhost:0", "localhost:12345");
+        assertSubstitution(
+            "aeron:udp?endpoint=localhost:12345", "aeron:udp?endpoint=localhost:12345", "localhost:54321");
+        assertSubstitution("aeron:udp?endpoint=localhost:12345", "aeron:udp?endpoint=localhost:0", "127.0.0.1:12345");
+        assertSubstitution("aeron:udp?endpoint=127.0.0.1:12345", "aeron:udp", "127.0.0.1:12345");
+    }
+
+    @Test
+    void shouldThrowIfResolvedEndpointInvalid()
+    {
+        final ChannelUri uri = ChannelUri.parse("aeron:udp?endpoint=localhost:0");
+        assertThrows(IllegalArgumentException.class, () -> uri.replaceEndpointWildcardPort("localhost:0"));
+        assertThrows(IllegalArgumentException.class, () -> uri.replaceEndpointWildcardPort("localhost"));
+        assertThrows(NullPointerException.class, () -> uri.replaceEndpointWildcardPort(null));
+    }
+
+    private static void assertSubstitution(
+        final String expected,
+        final String originalChannel,
+        final String resolvedEndpoint)
+    {
+        final ChannelUri uri = ChannelUri.parse(originalChannel);
+        uri.replaceEndpointWildcardPort(resolvedEndpoint);
+        assertEquals(expected, uri.toString());
     }
 
     private static List<Arguments> equalityValues()

@@ -31,7 +31,6 @@ import static org.agrona.BitUtil.SIZE_OF_LONG;
 final class CommonEventDissector
 {
     private static final DateTimeFormatter DATE_TIME_FORMATTER = ofPattern("uuuu-MM-dd HH:mm:ss.SSSZ");
-    private static final double NANOS_PER_SECOND = 1_000_000_000.0;
 
     private CommonEventDissector()
     {
@@ -40,10 +39,8 @@ final class CommonEventDissector
     static void dissectLogStartMessage(
         final long timestampNs, final long timestampMs, final ZoneId zone, final StringBuilder builder)
     {
-        builder
-            .append('[')
-            .append(((double)timestampNs) / NANOS_PER_SECOND)
-            .append("] log started ")
+        LogUtil.appendTimestamp(builder, timestampNs);
+        builder.append("log started ")
             .append(DATE_TIME_FORMATTER.format(ofInstant(ofEpochMilli(timestampMs), zone)));
     }
 
@@ -65,11 +62,8 @@ final class CommonEventDissector
         final long timestampNs = buffer.getLong(offset + encodedLength, LITTLE_ENDIAN);
         encodedLength += SIZE_OF_LONG;
 
-        builder
-            .append('[')
-            .append(((double)timestampNs) / NANOS_PER_SECOND)
-            .append("] ")
-            .append(context)
+        LogUtil.appendTimestamp(builder, timestampNs);
+        builder.append(context)
             .append(": ")
             .append(code.name())
             .append(" [")

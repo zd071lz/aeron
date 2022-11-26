@@ -55,7 +55,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(InterruptingTestCallback.class)
-public class ReceiverTest
+class ReceiverTest
 {
     private static final int TERM_BUFFER_LENGTH = TERM_MIN_LENGTH;
     private static final int POSITION_BITS_TO_SHIFT = LogBufferDescriptor.positionBitsToShift(TERM_BUFFER_LENGTH);
@@ -72,6 +72,7 @@ public class ReceiverTest
     private static final int INITIAL_WINDOW_LENGTH = Configuration.INITIAL_WINDOW_LENGTH_DEFAULT;
     private static final long STATUS_MESSAGE_TIMEOUT = Configuration.STATUS_MESSAGE_TIMEOUT_DEFAULT_NS;
     private static final InetSocketAddress SOURCE_ADDRESS = new InetSocketAddress("localhost", 45679);
+    private static final String SOURCE_IDENTITY = Configuration.sourceIdentity(SOURCE_ADDRESS);
 
     private static final Position POSITION = mock(Position.class);
     private static final ArrayList<SubscriberPosition> POSITIONS = new ArrayList<>();
@@ -84,10 +85,8 @@ public class ReceiverTest
     private final Position mockHighestReceivedPosition = spy(new AtomicLongPosition());
     private final Position mockRebuildPosition = spy(new AtomicLongPosition());
     private final Position mockSubscriberPosition = mock(Position.class);
-    private final ByteBuffer dataFrameBuffer = ByteBuffer.allocateDirect(2 * 1024);
-    private final UnsafeBuffer dataBuffer = new UnsafeBuffer(dataFrameBuffer);
-    private final ByteBuffer setupFrameBuffer = ByteBuffer.allocateDirect(SetupFlyweight.HEADER_LENGTH);
-    private final UnsafeBuffer setupBuffer = new UnsafeBuffer(setupFrameBuffer);
+    private final UnsafeBuffer dataBuffer = new UnsafeBuffer(new byte[2 * 1024]);
+    private final UnsafeBuffer setupBuffer = new UnsafeBuffer(new byte[SetupFlyweight.HEADER_LENGTH]);
 
     private final ErrorHandler mockErrorHandler = mock(ErrorHandler.class);
 
@@ -119,12 +118,13 @@ public class ReceiverTest
         .cachedNanoClock(nanoClock)
         .senderCachedNanoClock(nanoClock)
         .receiverCachedNanoClock(nanoClock)
-        .lossReport(mockLossReport);
+        .lossReport(mockLossReport)
+        .receiverDutyCycleTracker(new DutyCycleTracker());
 
     private ReceiveChannelEndpoint receiveChannelEndpoint;
 
     @BeforeEach
-    public void setUp() throws Exception
+    void setUp() throws Exception
     {
         final SubscriptionLink subscriptionLink = mock(SubscriptionLink.class);
         when(subscriptionLink.isTether()).thenReturn(Boolean.TRUE);
@@ -154,7 +154,8 @@ public class ReceiverTest
             .senderCachedNanoClock(nanoClock)
             .receiverCachedNanoClock(nanoClock)
             .receiveChannelEndpointThreadLocals(new ReceiveChannelEndpointThreadLocals())
-            .driverConductorProxy(driverConductorProxy);
+            .driverConductorProxy(driverConductorProxy)
+            .receiverDutyCycleTracker(new DutyCycleTracker());
 
         receiverProxy = new ReceiverProxy(
             ThreadingMode.DEDICATED, ctx.receiverCommandQueue(), mock(AtomicCounter.class));
@@ -183,14 +184,14 @@ public class ReceiverTest
     }
 
     @AfterEach
-    public void tearDown()
+    void tearDown()
     {
         CloseHelper.closeAll(receiveChannelEndpoint, senderChannel, receiver::onClose);
     }
 
     @Test
     @InterruptAfter(10)
-    public void shouldCreateRcvTermAndSendSmOnSetup() throws IOException
+    void shouldCreateRcvTermAndSendSmOnSetup() throws IOException
     {
         receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
@@ -218,6 +219,7 @@ public class ReceiverTest
             mockHighestReceivedPosition,
             mockRebuildPosition,
             SOURCE_ADDRESS,
+            SOURCE_IDENTITY,
             congestionControl);
 
         final int messagesRead = toConductorQueue.drain(
@@ -253,7 +255,7 @@ public class ReceiverTest
     }
 
     @Test
-    public void shouldInsertDataIntoLogAfterInitialExchange()
+    void shouldInsertDataIntoLogAfterInitialExchange()
     {
         receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
@@ -283,6 +285,7 @@ public class ReceiverTest
                     mockHighestReceivedPosition,
                     mockRebuildPosition,
                     SOURCE_ADDRESS,
+                    SOURCE_IDENTITY,
                     congestionControl);
 
                 receiverProxy.newPublicationImage(receiveChannelEndpoint, image);
@@ -317,7 +320,7 @@ public class ReceiverTest
     }
 
     @Test
-    public void shouldNotOverwriteDataFrameWithHeartbeat()
+    void shouldNotOverwriteDataFrameWithHeartbeat()
     {
         receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
@@ -347,6 +350,7 @@ public class ReceiverTest
                     mockHighestReceivedPosition,
                     mockRebuildPosition,
                     SOURCE_ADDRESS,
+                    SOURCE_IDENTITY,
                     congestionControl);
 
                 receiverProxy.newPublicationImage(receiveChannelEndpoint, image);
@@ -384,7 +388,7 @@ public class ReceiverTest
     }
 
     @Test
-    public void shouldOverwriteHeartbeatWithDataFrame()
+    void shouldOverwriteHeartbeatWithDataFrame()
     {
         receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
@@ -414,6 +418,7 @@ public class ReceiverTest
                     mockHighestReceivedPosition,
                     mockRebuildPosition,
                     SOURCE_ADDRESS,
+                    SOURCE_IDENTITY,
                     congestionControl);
 
                 receiverProxy.newPublicationImage(receiveChannelEndpoint, image);
@@ -451,7 +456,7 @@ public class ReceiverTest
     }
 
     @Test
-    public void shouldHandleNonZeroTermOffsetCorrectly()
+    void shouldHandleNonZeroTermOffsetCorrectly()
     {
         final int initialTermOffset = align(TERM_BUFFER_LENGTH / 16, FrameDescriptor.FRAME_ALIGNMENT);
         final int alignedDataFrameLength =
@@ -485,6 +490,7 @@ public class ReceiverTest
                     mockHighestReceivedPosition,
                     mockRebuildPosition,
                     SOURCE_ADDRESS,
+                    SOURCE_IDENTITY,
                     congestionControl);
 
                 receiverProxy.newPublicationImage(receiveChannelEndpoint, image);
@@ -523,7 +529,7 @@ public class ReceiverTest
     }
 
     @Test
-    public void shouldRemoveImageFromDispatcherWithNoActivity()
+    void shouldRemoveImageFromDispatcherWithNoActivity()
     {
         receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
@@ -545,7 +551,7 @@ public class ReceiverTest
     }
 
     @Test
-    public void shouldNotRemoveImageFromDispatcherOnRemoveSubscription()
+    void shouldNotRemoveImageFromDispatcherOnRemoveSubscription()
     {
         receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);

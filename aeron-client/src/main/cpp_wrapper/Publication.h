@@ -25,7 +25,6 @@
 
 #include "concurrent/AtomicBuffer.h"
 #include "concurrent/logbuffer/BufferClaim.h"
-#include "concurrent/logbuffer/TermAppender.h"
 #include "concurrent/status/UnsafeBufferPosition.h"
 #include "concurrent/status/StatusIndicatorReader.h"
 #include "util/Exceptions.h"
@@ -46,6 +45,28 @@ static const std::int64_t ADMIN_ACTION = -3;
 static const std::int64_t PUBLICATION_CLOSED = -4;
 static const std::int64_t MAX_POSITION_EXCEEDED = -5;
 
+/**
+ * Supplies the reserved value field for a data frame header. The returned value will be set in the header as
+ * Little Endian format.
+ *
+ * This will be called as the last action of encoding a data frame right before the length is set. All other fields
+ * in the header plus the body of the frame will have been written at the point of supply.
+ *
+ * @param termBuffer for the message
+ * @param termOffset of the start of the message
+ * @param length of the message in bytes
+ */
+typedef std::function<std::int64_t(
+    AtomicBuffer &termBuffer,
+    util::index_t termOffset,
+    util::index_t length)> on_reserved_value_supplier_t;
+
+static const on_reserved_value_supplier_t DEFAULT_RESERVED_VALUE_SUPPLIER =
+    [](AtomicBuffer &, util::index_t, util::index_t) -> std::int64_t
+    {
+        return 0;
+    };
+
 using AsyncDestination = aeron_async_destination_t;
 
 /**
@@ -56,7 +77,7 @@ using AsyncDestination = aeron_async_destination_t;
  * are created via an {@link Aeron} object, and messages are sent via an offer method or a claim and commit
  * method combination.
  * <p>
- * The APIs used to send are all non-blocking.
+ * The APIs for tryClaim and offer are non-blocking and threadsafe.
  * <p>
  * Note: Publication instances are threadsafe and can be shared between publisher threads.
  * @see Aeron#addPublication
@@ -405,8 +426,7 @@ public:
      * @return The new stream position, otherwise {@link #NOT_CONNECTED}, {@link #BACK_PRESSURED},
      * {@link #ADMIN_ACTION} or {@link #CLOSED}.
      */
-    template<class BufferIterator>
-    std::int64_t offer(
+    template<class BufferIterator> std::int64_t offer(
         BufferIterator startBuffer,
         BufferIterator lastBuffer,
         const on_reserved_value_supplier_t &reservedValueSupplier = DEFAULT_RESERVED_VALUE_SUPPLIER)
@@ -465,8 +485,7 @@ public:
      * @return The new stream position, otherwise {@link #NOT_CONNECTED}, {@link #BACK_PRESSURED},
      * {@link #ADMIN_ACTION} or {@link #CLOSED}.
      */
-    template<std::size_t N>
-    std::int64_t offer(
+    template<std::size_t N> std::int64_t offer(
         const std::array<concurrent::AtomicBuffer, N> &buffers,
         const on_reserved_value_supplier_t &reservedValueSupplier = DEFAULT_RESERVED_VALUE_SUPPLIER)
     {
@@ -564,7 +583,7 @@ public:
      */
     AsyncDestination *removeDestinationAsync(const std::string &endpointChannel)
     {
-        AsyncDestination *async;
+        AsyncDestination *async = nullptr;
         if (aeron_publication_async_remove_destination(&async, m_aeron, m_publication, endpointChannel.c_str()) < 0)
         {
             AERON_MAP_ERRNO_TO_SOURCED_EXCEPTION_AND_THROW;

@@ -63,7 +63,7 @@ void sigint_handler(int signal)
     AERON_PUT_ORDERED(running, false);
 }
 
-inline bool is_running()
+inline bool is_running(void)
 {
     bool result;
     AERON_GET_VOLATILE(result, running);
@@ -325,7 +325,7 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-    hdr_init(1, 10 * 1000 * 1000 * 1000LL, 3, &histogram);
+    hdr_init(1, 10 * 1000 * 1000 * INT64_C(1000), 3, &histogram);
 
     if (aeron_image_fragment_assembler_create(&fragment_assembler, pong_measuring_handler, histogram) < 0)
     {
@@ -366,4 +366,4 @@ cleanup:
     return status;
 }
 
-extern bool is_running();
+extern bool is_running(void);

@@ -58,7 +58,7 @@ void sigint_handler(int signal)
     AERON_PUT_ORDERED(running, false);
 }
 
-inline bool is_running()
+inline bool is_running(void)
 {
     bool result;
     AERON_GET_VOLATILE(result, running);
@@ -76,7 +76,7 @@ int main(int argc, char **argv)
     const char *channel = DEFAULT_CHANNEL;
     const char *aeron_dir = NULL;
     uint8_t *message = NULL;
-    uint64_t linger_ns = DEFAULT_LINGER_TIMEOUT_MS * 1000ul * 1000ul;
+    uint64_t linger_ns = DEFAULT_LINGER_TIMEOUT_MS * UINT64_C(1000) * UINT64_C(1000);
     uint64_t messages = DEFAULT_NUMBER_OF_MESSAGES;
     uint64_t message_length = DEFAULT_MESSAGE_LENGTH;
     uint64_t back_pressure_count = 0, message_sent_count = 0;
@@ -265,4 +265,4 @@ cleanup:
     return status;
 }
 
-extern bool is_running();
+extern bool is_running(void);

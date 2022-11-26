@@ -18,7 +18,7 @@ plugins {
     id 'java-library'
     id 'com.github.johnrengelman.shadow' version '7.1.2' apply false
     id 'biz.aQute.bnd.builder' version '6.3.1' apply false
-    id "com.github.ben-manes.versions" version "0.42.0"
+    id "com.github.ben-manes.versions" version "0.44.0"
 }
 
 defaultTasks 'clean', 'build'
@@ -45,14 +45,15 @@ def toolchainLauncher = javaToolchains.launcherFor {
 def aeronGroup = 'io.aeron'
 def aeronVersion = file('version.txt').text.trim()
 
-def agronaVersion = '1.15.2'
-def agronaVersionRange = '[1.15.2,2.0[' // allow any release >= 1.15.2 and < 2.0.0
-def sbeVersion = '1.25.3'
+def agronaVersion = '1.17.1'
+def agronaVersionRange = '[1.17.1,2.0[' // allow any release >= 1.17.1 and < 2.0.0
+def sbeVersion = '1.27.0'
 def checkstyleVersion = '9.3'
 def hamcrestVersion = '2.2'
-def junitVersion = '5.8.2'
-def mockitoVersion = '4.6.1'
-def byteBuddyVersion = '1.12.10'
+def junitVersion = '5.9.1'
+def junitPlatformVersion = '1.9.1'
+def mockitoVersion = '4.9.0'
+def byteBuddyVersion = '1.12.19'
 def findbugsAnnotationsVersion = '3.0.1'
 def hdrHistogramVersion = '2.1.12'
 
@@ -123,7 +124,7 @@ def projectPom = {
         developer {
             id = 'vyazelenko'
             name = 'Dmitry Vyazelenko'
-            email = 'vyazelenko@yahoo.com'
+            email = 'vyazelenko@protonmail.com '
             url = 'https://github.com/vyazelenko'
         }
     }
@@ -263,7 +264,6 @@ subprojects {
         systemProperty "aeron.debug.timeout", "3600s"
         systemProperty "aeron.event.log.reader.classname", "io.aeron.agent.CollectingEventLogReaderAgent"
     }
-
 
     task topologyTest(type: Test, group: 'verification') {
         maxParallelForks = 1
@@ -455,12 +455,19 @@ project(':aeron-archive') {
         codecGeneration "uk.co.real-logic:sbe-tool:${sbeVersion}"
         testImplementation project(':aeron-test-support')
         testImplementation "org.mockito:mockito-inline:${mockitoVersion}"
+        testImplementation files('build/classes/java/generatedTest')
     }
 
-    def generatedDir = file("${buildDir}/generated-src")
+    def generatedSrcDir = file("${buildDir}/generated-src")
+    def generatedTestDir = file("${buildDir}/generated-test")
+
     sourceSets {
         generated {
-            java.srcDir generatedDir
+            java.srcDir generatedSrcDir
+            compileClasspath += configurations.codecGeneration
+        }
+        generatedTest {
+            java.srcDir generatedTestDir
             compileClasspath += configurations.codecGeneration
         }
     }
@@ -471,16 +478,35 @@ project(':aeron-archive') {
         def sbeFile = 'src/main/resources/archive/fpl/sbe.xsd'
 
         inputs.files(codecsFile, markCodecsFile, sbeFile)
-        outputs.dir generatedDir
+        outputs.dir generatedSrcDir
 
         mainClass.set('uk.co.real_logic.sbe.SbeTool')
         classpath = configurations.codecGeneration
         systemProperties(
-            'sbe.output.dir': generatedDir,
+            'sbe.output.dir': generatedSrcDir,
             'sbe.target.language': 'Java',
             'sbe.validation.xsd': sbeFile,
             'sbe.validation.stop.on.error': 'true')
         args = [codecsFile, markCodecsFile]
+    }
+
+    task generateV6Codecs(type: JavaExec) {
+        def codecsFile = 'src/main/resources/archive/aeron-archive-codecs.xml'
+        def sbeFile = 'src/main/resources/archive/fpl/sbe.xsd'
+
+        inputs.files(codecsFile, sbeFile)
+        outputs.dir generatedTestDir
+
+        mainClass.set('uk.co.real_logic.sbe.SbeTool')
+        classpath = configurations.codecGeneration
+        systemProperties(
+                'sbe.output.dir': generatedTestDir,
+                'sbe.target.language': 'Java',
+                'sbe.validation.xsd': sbeFile,
+                'sbe.validation.stop.on.error': 'true',
+                'sbe.target.namespace': 'io.aeron.archive.codecs.v6',
+                'sbe.schema.transform.version': '*:6')
+        args = [codecsFile]
     }
 
     def generatedCppDir = file(System.getProperty('codec.target.dir') ?: "${rootDir}/cppbuild/Release/generated")
@@ -498,6 +524,8 @@ project(':aeron-archive') {
 
     compileJava.dependsOn compileGeneratedJava
     compileGeneratedJava.dependsOn generateCodecs
+    compileTestJava.dependsOn compileGeneratedTestJava
+    compileGeneratedTestJava.dependsOn generateV6Codecs
 
     jar {
         from sourceSets.generated.output
@@ -834,7 +862,8 @@ project(':aeron-system-tests') {
         testImplementation project(path: ':aeron-cluster')
         testImplementation "net.bytebuddy:byte-buddy-agent:${byteBuddyVersion}"
         testImplementation "net.bytebuddy:byte-buddy:${byteBuddyVersion}"
-        testRuntimeOnly "org.junit.platform:junit-platform-console-standalone:1.8.2"
+        testImplementation "org.mockito:mockito-inline:${mockitoVersion}"
+        testRuntimeOnly "org.junit.platform:junit-platform-console-standalone:${junitPlatformVersion}"
         testCompileOnly "com.google.code.findbugs:findbugs-annotations:${findbugsAnnotationsVersion}"
         if (buildJavaVersion == 8) {
             def jdkHome = toolchainLauncher.get().metadata.installationPath.asFile.toPath().toAbsolutePath()
@@ -864,6 +893,8 @@ project(':aeron-system-tests') {
 }
 
 project(':aeron-test-support') {
+    apply plugin: 'maven-publish'
+
     dependencies {
         api project(':aeron-client')
         api project(':aeron-cluster')
@@ -871,6 +902,20 @@ project(':aeron-test-support') {
         api "org.junit.jupiter:junit-jupiter-api:${junitVersion}"
         implementation "org.mockito:mockito-core:${mockitoVersion}"
     }
+
+    publishing {
+        publications {
+            aeronTestSupport(MavenPublication) {
+                from components.java
+                pom(projectPom)
+            }
+        }
+    }
+
+    java {
+        withSourcesJar()
+    }
+
 
     javadoc.enabled = false
 }
@@ -971,11 +1016,18 @@ task copyTestLogs(type: Copy) {
     include '**/build/test-output/**'
     include '**/*.log'
     include '**/*.tlog'
+    include '**/build/test-results/*/TEST*.xml'
     include 'LICENSE'
     exclude 'build'
     into 'build/test_logs'
 
     includeEmptyDirs = false
+}
+
+task tarTestLogs(type: Tar, dependsOn: copyTestLogs) {
+    archiveBaseName.set('test_logs')
+    from 'build/test_logs'
+    compression Compression.BZIP2
 }
 
 def isNonStable = { String version ->
@@ -992,6 +1044,6 @@ tasks.named("dependencyUpdates").configure {
 }
 
 wrapper {
-    gradleVersion = '7.4.2'
+    gradleVersion = '7.5.1'
     distributionType = 'ALL'
 }

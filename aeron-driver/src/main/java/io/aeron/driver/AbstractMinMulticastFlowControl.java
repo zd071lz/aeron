@@ -17,11 +17,18 @@ package io.aeron.driver;
 
 import io.aeron.CommonContext;
 import io.aeron.driver.media.UdpChannel;
+import io.aeron.driver.status.FlowControlReceivers;
+import io.aeron.protocol.SetupFlyweight;
 import io.aeron.protocol.StatusMessageFlyweight;
+import org.agrona.CloseHelper;
+import org.agrona.ErrorHandler;
+import org.agrona.concurrent.status.AtomicCounter;
+import org.agrona.concurrent.status.CountersManager;
 
 import java.util.Arrays;
 
 import static io.aeron.logbuffer.LogBufferDescriptor.computePosition;
+import static io.aeron.protocol.StatusMessageFlyweight.END_OF_STREAM_FLAG;
 import static org.agrona.AsciiEncoding.parseIntAscii;
 import static org.agrona.AsciiEncoding.parseLongAscii;
 import static org.agrona.SystemUtil.parseDuration;
@@ -32,7 +39,7 @@ import static org.agrona.collections.ArrayUtil.add;
  * group of receivers, not all possible receivers. However, it is agnostic of how that group is determined.
  * <p>
  * Tracking of receivers is done as long as they continue to send Status Messages. Once SMs stop, the receiver tracking
- * for that receiver will timeout after a given number of nanoseconds.
+ * for that receiver will time out after a given number of nanoseconds.
  */
 public abstract class AbstractMinMulticastFlowControl implements FlowControl
 {
@@ -45,6 +52,10 @@ public abstract class AbstractMinMulticastFlowControl implements FlowControl
     private long receiverTimeoutNs;
     private Receiver[] receivers = EMPTY_RECEIVERS;
     private String channel;
+    private AtomicCounter numReceivers;
+    private ErrorHandler errorHandler;
+    private long timeOfLastSetupNs;
+    private long lastSetupSenderLimit;
 
     /**
      * Base constructor for use by specialised implementations.
@@ -61,7 +72,11 @@ public abstract class AbstractMinMulticastFlowControl implements FlowControl
      */
     public void initialize(
         final MediaDriver.Context context,
+        final CountersManager countersManager,
         final UdpChannel udpChannel,
+        final int streamId,
+        final int sessionId,
+        final long registrationId,
         final int initialTermId,
         final int termBufferLength)
     {
@@ -72,6 +87,38 @@ public abstract class AbstractMinMulticastFlowControl implements FlowControl
 
         parseUriParam(udpChannel.channelUri().get(CommonContext.FLOW_CONTROL_PARAM_NAME));
         hasRequiredReceivers = receivers.length >= groupMinSize;
+        errorHandler = context.errorHandler();
+        numReceivers = FlowControlReceivers.allocate(
+            context.tempBuffer(), countersManager, registrationId, sessionId, streamId, channel);
+        timeOfLastSetupNs = 0;
+        lastSetupSenderLimit = -1;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public void close()
+    {
+        CloseHelper.close(errorHandler, numReceivers);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public long onSetup(
+        final SetupFlyweight flyweight,
+        final long senderLimit,
+        final long senderPosition,
+        final int positionBitsToShift,
+        final long timeNs)
+    {
+        if (0 < receivers.length)
+        {
+            timeOfLastSetupNs = timeNs;
+            lastSetupSenderLimit = senderLimit;
+        }
+
+        return senderLimit;
     }
 
     /**
@@ -79,14 +126,14 @@ public abstract class AbstractMinMulticastFlowControl implements FlowControl
      */
     public long onIdle(final long timeNs, final long senderLimit, final long senderPosition, final boolean isEos)
     {
-        long minLimitPosition = Long.MAX_VALUE;
+        long minLimitPosition = lastSetupSenderLimit(timeNs);
         int removed = 0;
         Receiver[] receivers = this.receivers;
 
         for (int lastIndex = receivers.length - 1, i = lastIndex; i >= 0; i--)
         {
             final Receiver receiver = receivers[i];
-            if ((receiver.timeOfLastStatusMessageNs + receiverTimeoutNs) - timeNs < 0)
+            if ((receiver.timeOfLastStatusMessageNs + receiverTimeoutNs) - timeNs < 0 || receiver.eosFlagged)
             {
                 if (i != lastIndex)
                 {
@@ -107,6 +154,7 @@ public abstract class AbstractMinMulticastFlowControl implements FlowControl
             receivers = truncateReceivers(receivers, removed);
             hasRequiredReceivers = receivers.length >= groupMinSize;
             this.receivers = receivers;
+            numReceivers.setOrdered(receivers.length);
         }
 
         return receivers.length < groupMinSize || receivers.length == 0 ? senderLimit : minLimitPosition;
@@ -150,8 +198,9 @@ public abstract class AbstractMinMulticastFlowControl implements FlowControl
         final long windowLength = flyweight.receiverWindowLength();
         final long receiverId = flyweight.receiverId();
         final long lastPositionPlusWindow = position + windowLength;
+        final boolean eosFlagged = END_OF_STREAM_FLAG == (flyweight.flags() & END_OF_STREAM_FLAG);
         boolean isExisting = false;
-        long minPosition = Long.MAX_VALUE;
+        long minPosition = lastSetupSenderLimit(timeNs);
 
         Receiver[] receivers = this.receivers;
 
@@ -159,6 +208,7 @@ public abstract class AbstractMinMulticastFlowControl implements FlowControl
         {
             if (matchesTag && receiverId == receiver.receiverId)
             {
+                receiver.eosFlagged = eosFlagged;
                 receiver.lastPosition = Math.max(position, receiver.lastPosition);
                 receiver.lastPositionPlusWindow = lastPositionPlusWindow;
                 receiver.timeOfLastStatusMessageNs = timeNs;
@@ -169,6 +219,7 @@ public abstract class AbstractMinMulticastFlowControl implements FlowControl
         }
 
         if (!isExisting &&
+            !eosFlagged &&
             matchesTag &&
             (0 == receivers.length || lastPositionPlusWindow >= minPosition - windowLength))
         {
@@ -179,6 +230,8 @@ public abstract class AbstractMinMulticastFlowControl implements FlowControl
             this.receivers = receivers;
             minPosition = Math.min(minPosition, lastPositionPlusWindow);
             receiverAdded(receiver.receiverId, receiver.sessionId, receiver.streamId, channel, receivers.length);
+            numReceivers.setOrdered(receivers.length);
+            lastSetupSenderLimit = -1;
         }
 
         if (receivers.length < groupMinSize)
@@ -296,6 +349,23 @@ public abstract class AbstractMinMulticastFlowControl implements FlowControl
 //            ", channel=" + channel);
     }
 
+    private long lastSetupSenderLimit(final long nowNs)
+    {
+        if (-1 != lastSetupSenderLimit)
+        {
+            if ((timeOfLastSetupNs + receiverTimeoutNs) - nowNs < 0)
+            {
+                lastSetupSenderLimit = -1;
+            }
+            else
+            {
+                return lastSetupSenderLimit;
+            }
+        }
+
+        return Long.MAX_VALUE;
+    }
+
     static final class Receiver
     {
         final int sessionId;
@@ -304,6 +374,7 @@ public abstract class AbstractMinMulticastFlowControl implements FlowControl
         long lastPosition;
         long lastPositionPlusWindow;
         long timeOfLastStatusMessageNs;
+        boolean eosFlagged;
 
         Receiver(
             final long receiverId,
@@ -319,6 +390,7 @@ public abstract class AbstractMinMulticastFlowControl implements FlowControl
             this.lastPosition = lastPosition;
             this.lastPositionPlusWindow = lastPositionPlusWindow;
             this.timeOfLastStatusMessageNs = timeNs;
+            this.eosFlagged = false;
         }
     }
 }

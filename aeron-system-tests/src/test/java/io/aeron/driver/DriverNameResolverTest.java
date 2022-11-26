@@ -39,8 +39,9 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+@SlowTest
 @ExtendWith(InterruptingTestCallback.class)
-public class DriverNameResolverTest
+class DriverNameResolverTest
 {
     private static final SleepingMillisIdleStrategy SLEEP_50_MS = new SleepingMillisIdleStrategy(50);
     private final String baseDir = CommonContext.getAeronDirectoryName();
@@ -48,10 +49,10 @@ public class DriverNameResolverTest
     private final Map<String, Aeron> clients = new TreeMap<>();
 
     @RegisterExtension
-    public final SystemTestWatcher testWatcher = new SystemTestWatcher();
+    final SystemTestWatcher testWatcher = new SystemTestWatcher();
 
     @AfterEach
-    public void after()
+    void after()
     {
         CloseHelper.closeAll(clients.values());
         CloseHelper.closeAll(drivers.values());
@@ -63,7 +64,7 @@ public class DriverNameResolverTest
     }
 
     @Test
-    public void shouldInitializeWithDefaultsAndHaveResolverCounters()
+    void shouldInitializeWithDefaultsAndHaveResolverCounters()
     {
         addDriver(TestMediaDriver.launch(setDefaults(new MediaDriver.Context()
             .resolverName("A")
@@ -76,7 +77,7 @@ public class DriverNameResolverTest
 
     @Test
     @InterruptAfter(10)
-    public void shouldSeeNeighbor()
+    void shouldSeeNeighbor()
     {
         addDriver(TestMediaDriver.launch(setDefaults(new MediaDriver.Context())
             .aeronDirectoryName(baseDir + "-A")
@@ -99,7 +100,7 @@ public class DriverNameResolverTest
 
     @Test
     @InterruptAfter(20)
-    public void shouldSeeNeighborsViaGossip()
+    void shouldSeeNeighborsViaGossip()
     {
         addDriver(TestMediaDriver.launch(setDefaults(new MediaDriver.Context())
             .aeronDirectoryName(baseDir + "-B")
@@ -129,10 +130,9 @@ public class DriverNameResolverTest
         awaitCounterValue("C", cNeighborsCounterId, 2);
     }
 
-    @SlowTest
     @Test
     @InterruptAfter(15)
-    public void shouldSeeNeighborsViaGossipAsLateJoiningDriver()
+    void shouldSeeNeighborsViaGossipAsLateJoiningDriver()
     {
         addDriver(TestMediaDriver.launch(setDefaults(new MediaDriver.Context())
             .aeronDirectoryName(baseDir + "-A")
@@ -177,7 +177,7 @@ public class DriverNameResolverTest
 
     @Test
     @InterruptAfter(10)
-    public void shouldResolveDriverNameAndAllowConnection()
+    void shouldResolveDriverNameAndAllowConnection()
     {
         addDriver(TestMediaDriver.launch(setDefaults(new MediaDriver.Context())
             .aeronDirectoryName(baseDir + "-A")
@@ -211,10 +211,9 @@ public class DriverNameResolverTest
         }
     }
 
-    @SlowTest
     @Test
     @InterruptAfter(20)
-    public void shouldTimeoutAllNeighborsAndCacheEntries()
+    void shouldTimeoutAllNeighborsAndCacheEntries()
     {
         addDriver(TestMediaDriver.launch(setDefaults(new MediaDriver.Context())
             .aeronDirectoryName(baseDir + "-A")
@@ -244,10 +243,9 @@ public class DriverNameResolverTest
         awaitCounterValue("A", aCacheEntriesCounterId, 0);
     }
 
-    @SlowTest
     @Test
     @InterruptAfter(30)
-    public void shouldTimeoutNeighborsAndCacheEntriesThatAreSeenViaGossip()
+    void shouldTimeoutNeighborsAndCacheEntriesThatAreSeenViaGossip()
     {
         addDriver(TestMediaDriver.launch(setDefaults(new MediaDriver.Context())
             .aeronDirectoryName(baseDir + "-A")
@@ -290,7 +288,7 @@ public class DriverNameResolverTest
 
     @Test
     @InterruptAfter(10)
-    public void shouldUseFirstAvailableBootstrapNeighbor()
+    void shouldUseFirstAvailableBootstrapNeighbor()
     {
         addDriver(TestMediaDriver.launch(setDefaults(new MediaDriver.Context())
             .aeronDirectoryName(baseDir + "-A")
@@ -315,10 +313,9 @@ public class DriverNameResolverTest
             "B", bNeighborsCounterId, "Resolver neighbors: bound 0.0.0.0:8051 bootstrap 127.0.0.1:8050");
     }
 
-    @SlowTest
     @Test
     @InterruptAfter(20)
-    public void shouldFallbackToAnotherBootstrapNeighborIfOneBecomesUnavailable()
+    void shouldFallbackToAnotherBootstrapNeighborIfOneBecomesUnavailable()
     {
         assumeTrue(TestMediaDriver.shouldRunJavaMediaDriver());
 

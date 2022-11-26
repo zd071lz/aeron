@@ -372,19 +372,21 @@ public class CommonContext implements Cloneable
                 return System.out;
 
             case "no_op":
-                return new PrintStream(new OutputStream()
-                {
-                    public void write(final int b)
-                    {
-                        // No-op
-                    }
-                });
+                return NO_OP_LOGGER;
 
             case "stderr":
             default:
                 return System.err;
         }
     }
+
+    private static final PrintStream NO_OP_LOGGER = new PrintStream(new OutputStream()
+    {
+        public void write(final int b)
+        {
+            // No-op
+        }
+    });
 
     /**
      * Using an integer because there is no support for boolean. 1 is concluded, 0 is not concluded.
@@ -911,16 +913,20 @@ public class CommonContext implements Cloneable
         if (ErrorLogReader.hasErrors(errorBuffer))
         {
             final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ");
-            final ErrorConsumer errorConsumer = (count, firstTimestamp, lastTimestamp, ex) ->
-                out.format(
-                "***%n%d observations from %s to %s for:%n %s%n",
-                count,
-                dateFormat.format(new Date(firstTimestamp)),
-                dateFormat.format(new Date(lastTimestamp)),
-                ex);
+            final ErrorConsumer errorConsumer =
+                (count, firstTimestamp, lastTimestamp, encodedException) ->
+                {
+                    final String fromDate = dateFormat.format(new Date(firstTimestamp));
+                    final String toDate = dateFormat.format(new Date(lastTimestamp));
+
+                    out.println();
+                    out.println(count + " observations from " + fromDate + " to " + toDate + " for:");
+                    out.println(encodedException);
+                };
 
             distinctErrorCount = ErrorLogReader.read(errorBuffer, errorConsumer);
-            out.format("%n%d distinct errors observed.%n", distinctErrorCount);
+            out.println();
+            out.println(distinctErrorCount + " distinct errors observed.");
         }
 
         return distinctErrorCount;
@@ -993,7 +999,7 @@ public class CommonContext implements Cloneable
      */
     public static ErrorHandler setupErrorHandler(final ErrorHandler userErrorHandler, final DistinctErrorLog errorLog)
     {
-        final LoggingErrorHandler loggingErrorHandler = new LoggingErrorHandler(errorLog);
+        final LoggingErrorHandler loggingErrorHandler = new LoggingErrorHandler(errorLog, fallbackLogger());
         if (null == userErrorHandler)
         {
             return loggingErrorHandler;

@@ -85,7 +85,7 @@ int aeron_publication_image_create(
     if (context->perform_storage_checks && context->usable_fs_space_func(context->aeron_dir) < log_length)
     {
         AERON_SET_ERR(
-            ENOSPC,
+            -AERON_ERROR_CODE_STORAGE_SPACE,
             "Insufficient usable storage for new log of length=%" PRId64 " in %s",
             log_length,
             context->aeron_dir);
@@ -103,8 +103,8 @@ int aeron_publication_image_create(
     _image->log_file_name = NULL;
     if (aeron_alloc((void **)(&_image->log_file_name), (size_t)path_length + 1) < 0)
     {
-        aeron_free(_image);
         AERON_APPEND_ERR("%s", "Could not allocate publication image log_file_name");
+        aeron_free(_image);
         return -1;
     }
 
@@ -114,19 +114,15 @@ int aeron_publication_image_create(
         aeron_publication_image_on_gap_detected,
         _image) < 0)
     {
-        aeron_free(_image->log_file_name);
-        aeron_free(_image);
         AERON_APPEND_ERR("%s", "Could not init publication image loss detector");
-        return -1;
+        goto error;
     }
 
     if (context->raw_log_map_func(
         &_image->mapped_raw_log, path, is_sparse, (uint64_t)term_buffer_length, context->file_page_size) < 0)
     {
-        aeron_free(_image->log_file_name);
-        aeron_free(_image);
         AERON_APPEND_ERR("error mapping network raw log: %s", path);
-        return -1;
+        goto error;
     }
     _image->raw_log_close_func = context->raw_log_close_func;
     _image->raw_log_free_func = context->raw_log_free_func;
@@ -138,8 +134,7 @@ int aeron_publication_image_create(
 
     if (aeron_publication_image_add_destination(_image, destination) < 0)
     {
-        // TODO: add missing clean up.
-        return -1;
+        goto error;
     }
     if (!destination->has_control_addr)
     {
@@ -196,10 +191,19 @@ int aeron_publication_image_create(
     _image->last_sm_change_number = -1;
     _image->last_loss_change_number = -1;
     _image->is_end_of_stream = false;
+    _image->is_sending_eos_sm = false;
     _image->has_receiver_released = false;
     _image->sm_timeout_ns = (int64_t)context->status_message_timeout_ns;
 
     memcpy(&_image->source_address, source_address, sizeof(_image->source_address));
+    const int source_identity_length = aeron_format_source_identity(
+        _image->source_identity, sizeof(_image->source_identity), source_address);
+    if (source_identity_length <= 0)
+    {
+        AERON_APPEND_ERR("%s", "failed to format source identity");
+        goto error;
+    }
+    _image->source_identity_length = (size_t)source_identity_length;
 
     _image->heartbeats_received_counter = aeron_system_counter_addr(
         system_counters, AERON_SYSTEM_COUNTER_HEARTBEATS_RECEIVED);
@@ -244,6 +248,11 @@ int aeron_publication_image_create(
     *image = _image;
 
     return 0;
+error:
+    aeron_free(_image->connections.array);
+    aeron_free(_image->log_file_name);
+    aeron_free(_image);
+    return -1;
 }
 
 int aeron_publication_image_close(aeron_counters_manager_t *counters_manager, aeron_publication_image_t *image)
@@ -321,9 +330,6 @@ void aeron_publication_image_on_gap_detected(void *clientd, int32_t term_id, int
     {
         if (NULL != image->conductor_fields.endpoint)
         {
-            char source[AERON_MAX_PATH];
-            int source_length = aeron_format_source_identity(source, sizeof(source), &image->source_address);
-
             image->loss_reporter_offset = aeron_loss_reporter_create_entry(
                 image->loss_reporter,
                 (int64_t)length,
@@ -332,8 +338,8 @@ void aeron_publication_image_on_gap_detected(void *clientd, int32_t term_id, int
                 image->stream_id,
                 image->conductor_fields.endpoint->conductor_fields.udp_channel->original_uri,
                 image->conductor_fields.endpoint->conductor_fields.udp_channel->uri_length,
-                source,
-                (size_t)source_length);
+                image->source_identity,
+                image->source_identity_length);
         }
 
         if (-1 == image->loss_reporter_offset)
@@ -567,6 +573,9 @@ int aeron_publication_image_send_pending_status_message(aeron_publication_image_
             const int32_t term_id = aeron_logbuffer_compute_term_id_from_position(
                 sm_position, image->position_bits_to_shift, image->initial_term_id);
             const int32_t term_offset = (int32_t)(sm_position & image->term_length_mask);
+            bool is_sending_eos_sm;
+            AERON_GET_VOLATILE(is_sending_eos_sm, image->is_sending_eos_sm);
+            const uint8_t flags = is_sending_eos_sm ? AERON_STATUS_MESSAGE_HEADER_EOS_FLAG : 0;
 
             for (size_t i = 0, len = image->connections.length; i < len; i++)
             {
@@ -583,7 +592,7 @@ int aeron_publication_image_send_pending_status_message(aeron_publication_image_
                         term_id,
                         term_offset,
                         receiver_window_length,
-                        0);
+                        flags);
 
                     if (send_sm_result < 0)
                     {
@@ -605,7 +614,6 @@ int aeron_publication_image_send_pending_status_message(aeron_publication_image_
             aeron_update_active_transport_count(image, now_ns);
         }
     }
-
 
     return work_count;
 }
@@ -837,10 +845,6 @@ void aeron_publication_image_check_untethered_subscriptions(
                 case AERON_SUBSCRIPTION_TETHER_RESTING:
                     if (now_ns > (tetherable_position->time_of_last_update_ns + resting_timeout_ns))
                     {
-                        char source_identity[AERON_MAX_PATH];
-                        int source_identity_length = aeron_format_source_identity(
-                            source_identity, sizeof(source_identity), &image->source_address);
-
                         aeron_counter_set_ordered(tetherable_position->value_addr, *image->rcv_pos_position.value_addr);
                         aeron_driver_conductor_on_available_image(
                             conductor,
@@ -851,8 +855,8 @@ void aeron_publication_image_check_untethered_subscriptions(
                             image->log_file_name_length,
                             tetherable_position->counter_id,
                             tetherable_position->subscription_registration_id,
-                            source_identity,
-                            (size_t)source_identity_length);
+                            image->source_identity,
+                            image->source_identity_length);
 
                         image->untethered_subscription_state_change_func(
                             tetherable_position,
@@ -888,8 +892,7 @@ void aeron_publication_image_on_time_event(
             {
                 image->conductor_fields.state = AERON_PUBLICATION_IMAGE_STATE_DRAINING;
                 image->conductor_fields.time_of_last_state_change_ns = now_ns;
-
-                aeron_driver_receiver_proxy_on_remove_publication_image(conductor->context->receiver_proxy, image);
+                AERON_PUT_ORDERED(image->is_sending_eos_sm, true);
             }
 
             aeron_publication_image_check_untethered_subscriptions(conductor, image, now_ns);
@@ -898,12 +901,19 @@ void aeron_publication_image_on_time_event(
 
         case AERON_PUBLICATION_IMAGE_STATE_DRAINING:
         {
-            if (aeron_publication_image_is_drained(image))
+            if (aeron_publication_image_is_drained(image) &&
+                ((image->conductor_fields.time_of_last_state_change_ns +
+                (AERON_IMAGE_SM_EOS_MULTIPLE * image->sm_timeout_ns)) - now_ns < 0))
             {
                 image->conductor_fields.state = AERON_PUBLICATION_IMAGE_STATE_LINGER;
                 image->conductor_fields.time_of_last_state_change_ns = now_ns;
 
                 aeron_driver_conductor_image_transition_to_linger(conductor, image);
+
+                aeron_receive_channel_endpoint_dec_image_ref_count(image->endpoint);
+                aeron_driver_receiver_proxy_on_remove_publication_image(conductor->context->receiver_proxy, image);
+
+                aeron_receive_channel_endpoint_try_remove_endpoint(image->endpoint);
             }
             break;
         }

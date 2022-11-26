@@ -47,6 +47,8 @@ class ConsensusAdapter implements FragmentHandler, AutoCloseable
     private final TerminationPositionDecoder terminationPositionDecoder = new TerminationPositionDecoder();
     private final TerminationAckDecoder terminationAckDecoder = new TerminationAckDecoder();
     private final BackupQueryDecoder backupQueryDecoder = new BackupQueryDecoder();
+    private final ChallengeResponseDecoder challengeResponseDecoder = new ChallengeResponseDecoder();
+    private final HeartbeatRequestDecoder heartbeatRequestDecoder = new HeartbeatRequestDecoder();
 
     private final FragmentAssembler fragmentAssembler = new FragmentAssembler(this);
     private final Subscription subscription;
@@ -97,7 +99,8 @@ class ConsensusAdapter implements FragmentHandler, AutoCloseable
                     canvassPositionDecoder.logLeadershipTermId(),
                     canvassPositionDecoder.logPosition(),
                     canvassPositionDecoder.leadershipTermId(),
-                    canvassPositionDecoder.followerMemberId());
+                    canvassPositionDecoder.followerMemberId(),
+                    canvassPositionDecoder.protocolVersion());
                 break;
 
             case RequestVoteDecoder.TEMPLATE_ID:
@@ -111,7 +114,8 @@ class ConsensusAdapter implements FragmentHandler, AutoCloseable
                     requestVoteDecoder.logLeadershipTermId(),
                     requestVoteDecoder.logPosition(),
                     requestVoteDecoder.candidateTermId(),
-                    requestVoteDecoder.candidateMemberId());
+                    requestVoteDecoder.candidateMemberId(),
+                    requestVoteDecoder.protocolVersion());
                 break;
 
             case VoteDecoder.TEMPLATE_ID:
@@ -149,6 +153,7 @@ class ConsensusAdapter implements FragmentHandler, AutoCloseable
                     newLeadershipTermDecoder.timestamp(),
                     newLeadershipTermDecoder.leaderMemberId(),
                     newLeadershipTermDecoder.logSessionId(),
+                    newLeadershipTermDecoder.appVersion(),
                     newLeadershipTermDecoder.isStartup() == BooleanType.TRUE);
                 break;
 
@@ -294,6 +299,7 @@ class ConsensusAdapter implements FragmentHandler, AutoCloseable
                 break;
 
             case BackupQueryDecoder.TEMPLATE_ID:
+            {
                 backupQueryDecoder.wrap(
                     buffer,
                     offset + MessageHeaderDecoder.ENCODED_LENGTH,
@@ -320,6 +326,56 @@ class ConsensusAdapter implements FragmentHandler, AutoCloseable
                     responseChannel,
                     credentials);
                 break;
+            }
+
+            case ChallengeResponseDecoder.TEMPLATE_ID:
+            {
+                challengeResponseDecoder.wrap(
+                    buffer,
+                    offset + MessageHeaderDecoder.ENCODED_LENGTH,
+                    messageHeaderDecoder.blockLength(),
+                    messageHeaderDecoder.version());
+
+                final byte[] credentials = new byte[challengeResponseDecoder.encodedCredentialsLength()];
+                challengeResponseDecoder.getEncodedCredentials(credentials, 0, credentials.length);
+
+                consensusModuleAgent.onConsensusChallengeResponse(
+                    challengeResponseDecoder.correlationId(),
+                    challengeResponseDecoder.clusterSessionId(),
+                    credentials);
+                break;
+            }
+
+            case HeartbeatRequestDecoder.TEMPLATE_ID:
+            {
+                heartbeatRequestDecoder.wrap(
+                    buffer,
+                    offset + MessageHeaderDecoder.ENCODED_LENGTH,
+                    messageHeaderDecoder.blockLength(),
+                    messageHeaderDecoder.version());
+
+                final String responseChannel = heartbeatRequestDecoder.responseChannel();
+                final int credentialsLength = heartbeatRequestDecoder.encodedCredentialsLength();
+                final byte[] credentials;
+                if (credentialsLength > 0)
+                {
+                    credentials = new byte[credentialsLength];
+                    heartbeatRequestDecoder.getEncodedCredentials(credentials, 0, credentials.length);
+                }
+                else
+                {
+                    credentials = ArrayUtil.EMPTY_BYTE_ARRAY;
+                }
+
+                consensusModuleAgent.onHeartbeatRequest(
+                    heartbeatRequestDecoder.correlationId(),
+                    heartbeatRequestDecoder.responseStreamId(),
+                    responseChannel,
+                    credentials);
+
+                break;
+            }
+
         }
     }
 }

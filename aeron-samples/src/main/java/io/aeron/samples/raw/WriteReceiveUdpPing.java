@@ -15,6 +15,8 @@
 package io.aeron.samples.raw;
 
 import org.HdrHistogram.Histogram;
+import org.agrona.SystemUtil;
+import org.agrona.concurrent.HighResolutionTimer;
 import org.agrona.concurrent.SigInt;
 import org.agrona.hints.ThreadHints;
 
@@ -53,8 +55,12 @@ public class WriteReceiveUdpPing
             numChannels = Integer.parseInt(args[0]);
         }
 
-        final Histogram histogram = new Histogram(TimeUnit.SECONDS.toNanos(10), 3);
+        if (SystemUtil.isWindows())
+        {
+            HighResolutionTimer.enable();
+        }
 
+        final Histogram histogram = new Histogram(TimeUnit.SECONDS.toNanos(10), 3);
         final ByteBuffer buffer = ByteBuffer.allocateDirect(MTU_LENGTH_DEFAULT);
 
         final DatagramChannel[] receiveChannels = new DatagramChannel[numChannels];
@@ -78,7 +84,7 @@ public class WriteReceiveUdpPing
 
             histogram.reset();
             System.gc();
-            LockSupport.parkNanos(1000_000_000);
+            LockSupport.parkNanos(1_000_000_000L);
         }
     }
 
@@ -124,7 +130,7 @@ public class WriteReceiveUdpPing
             final long receivedSequenceNumber = buffer.getLong(0);
             if (receivedSequenceNumber != sequenceNumber)
             {
-                throw new IllegalStateException("Data Loss:" + sequenceNumber + " to " + receivedSequenceNumber);
+                throw new IllegalStateException("Data Loss: " + sequenceNumber + " to " + receivedSequenceNumber);
             }
 
             final long durationNs = System.nanoTime() - buffer.getLong(SIZE_OF_LONG);

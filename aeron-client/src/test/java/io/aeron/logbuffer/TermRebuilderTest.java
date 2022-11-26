@@ -28,22 +28,22 @@ import static java.nio.ByteOrder.LITTLE_ENDIAN;
 import static org.mockito.Mockito.*;
 import static io.aeron.logbuffer.FrameDescriptor.*;
 
-public class TermRebuilderTest
+class TermRebuilderTest
 {
     private static final int TERM_BUFFER_CAPACITY = LogBufferDescriptor.TERM_MIN_LENGTH;
 
     private final UnsafeBuffer termBuffer = mock(UnsafeBuffer.class);
 
     @BeforeEach
-    public void setUp()
+    void setUp()
     {
         when(termBuffer.capacity()).thenReturn(TERM_BUFFER_CAPACITY);
     }
 
     @Test
-    public void shouldInsertIntoEmptyBuffer()
+    void shouldInsertIntoEmptyBuffer()
     {
-        final UnsafeBuffer packet = new UnsafeBuffer(ByteBuffer.allocateDirect(256));
+        final UnsafeBuffer packet = new UnsafeBuffer(ByteBuffer.allocate(256));
         final int termOffset = 0;
         final int srcOffset = 0;
         final int length = 256;
@@ -61,13 +61,13 @@ public class TermRebuilderTest
     }
 
     @Test
-    public void shouldInsertLastFrameIntoBuffer()
+    void shouldInsertLastFrameIntoBuffer()
     {
         final int frameLength = BitUtil.align(256, FRAME_ALIGNMENT);
         final int srcOffset = 0;
         final int tail = TERM_BUFFER_CAPACITY - frameLength;
         final int termOffset = tail;
-        final UnsafeBuffer packet = new UnsafeBuffer(ByteBuffer.allocateDirect(frameLength));
+        final UnsafeBuffer packet = new UnsafeBuffer(ByteBuffer.allocate(frameLength));
         packet.putShort(typeOffset(srcOffset), (short)PADDING_FRAME_TYPE, LITTLE_ENDIAN);
         packet.putInt(srcOffset, frameLength, LITTLE_ENDIAN);
 
@@ -78,14 +78,14 @@ public class TermRebuilderTest
     }
 
     @Test
-    public void shouldFillSingleGap()
+    void shouldFillSingleGap()
     {
         final int frameLength = 50;
         final int alignedFrameLength = BitUtil.align(frameLength, FRAME_ALIGNMENT);
         final int srcOffset = 0;
         final int tail = alignedFrameLength;
         final int termOffset = tail;
-        final UnsafeBuffer packet = new UnsafeBuffer(ByteBuffer.allocateDirect(alignedFrameLength));
+        final UnsafeBuffer packet = new UnsafeBuffer(ByteBuffer.allocate(alignedFrameLength));
 
         TermRebuilder.insert(termBuffer, termOffset, packet, alignedFrameLength);
 
@@ -94,12 +94,12 @@ public class TermRebuilderTest
     }
 
     @Test
-    public void shouldFillAfterAGap()
+    void shouldFillAfterAGap()
     {
         final int frameLength = 50;
         final int alignedFrameLength = BitUtil.align(frameLength, FRAME_ALIGNMENT);
         final int srcOffset = 0;
-        final UnsafeBuffer packet = new UnsafeBuffer(ByteBuffer.allocateDirect(alignedFrameLength));
+        final UnsafeBuffer packet = new UnsafeBuffer(ByteBuffer.allocate(alignedFrameLength));
         final int termOffset = alignedFrameLength * 2;
 
         TermRebuilder.insert(termBuffer, termOffset, packet, alignedFrameLength);
@@ -112,12 +112,12 @@ public class TermRebuilderTest
     }
 
     @Test
-    public void shouldFillGapButNotMoveTailOrHwm()
+    void shouldFillGapButNotMoveTailOrHwm()
     {
         final int frameLength = 50;
         final int alignedFrameLength = BitUtil.align(frameLength, FRAME_ALIGNMENT);
         final int srcOffset = 0;
-        final UnsafeBuffer packet = new UnsafeBuffer(ByteBuffer.allocateDirect(alignedFrameLength));
+        final UnsafeBuffer packet = new UnsafeBuffer(ByteBuffer.allocate(alignedFrameLength));
         final int termOffset = alignedFrameLength * 2;
 
         TermRebuilder.insert(termBuffer, termOffset, packet, alignedFrameLength);

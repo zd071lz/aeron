@@ -15,8 +15,10 @@
  */
 package io.aeron.driver;
 
-import io.aeron.ReservedValueSupplier;
-import io.aeron.logbuffer.*;
+import io.aeron.logbuffer.FrameDescriptor;
+import io.aeron.logbuffer.HeaderWriter;
+import io.aeron.logbuffer.LogBufferDescriptor;
+import io.aeron.logbuffer.TermRebuilder;
 import io.aeron.protocol.DataHeaderFlyweight;
 import io.aeron.protocol.HeaderFlyweight;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -31,12 +33,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import java.util.stream.IntStream;
 
-import static java.nio.ByteBuffer.allocateDirect;
+import static io.aeron.logbuffer.FrameDescriptor.FRAME_ALIGNMENT;
+import static io.aeron.logbuffer.FrameDescriptor.frameLengthOrdered;
+import static io.aeron.protocol.DataHeaderFlyweight.HEADER_LENGTH;
 import static java.util.Arrays.asList;
 import static org.agrona.BitUtil.align;
 import static org.mockito.Mockito.*;
 
-public class RetransmitHandlerTest
+class RetransmitHandlerTest
 {
     private static final int MTU_LENGTH = 1024;
     private static final int TERM_BUFFER_LENGTH = LogBufferDescriptor.TERM_MIN_LENGTH;
@@ -53,12 +57,9 @@ public class RetransmitHandlerTest
         new StaticDelayGenerator(TimeUnit.MILLISECONDS.toNanos(0), false);
     private static final FeedbackDelayGenerator LINGER_GENERATOR =
         new StaticDelayGenerator(TimeUnit.MILLISECONDS.toNanos(40), false);
-    private static final ReservedValueSupplier RESERVED_VALUE_SUPPLIER = null;
 
-    private final UnsafeBuffer termBuffer = new UnsafeBuffer(allocateDirect(TERM_BUFFER_LENGTH));
-    private final UnsafeBuffer metaDataBuffer = new UnsafeBuffer(
-        allocateDirect(LogBufferDescriptor.LOG_META_DATA_LENGTH));
-    private final TermAppender termAppender = new TermAppender(termBuffer, metaDataBuffer, 0);
+    private final UnsafeBuffer termBuffer = new UnsafeBuffer(new byte[TERM_BUFFER_LENGTH]);
+    private final UnsafeBuffer metaDataBuffer = new UnsafeBuffer(new byte[LogBufferDescriptor.LOG_META_DATA_LENGTH]);
 
     private final UnsafeBuffer rcvBuffer = new UnsafeBuffer(new byte[MESSAGE_LENGTH]);
     private final DataHeaderFlyweight dataHeader = new DataHeaderFlyweight();
@@ -75,7 +76,7 @@ public class RetransmitHandlerTest
         () -> currentTime, invalidPackets, DELAY_GENERATOR, LINGER_GENERATOR);
 
     @BeforeEach
-    public void before()
+    void before()
     {
         LogBufferDescriptor.rawTail(metaDataBuffer, 0, LogBufferDescriptor.packTail(TERM_ID, 0));
     }
@@ -89,7 +90,7 @@ public class RetransmitHandlerTest
 
     @ParameterizedTest
     @MethodSource("consumers")
-    public void shouldRetransmitOnNak(final BiConsumer<RetransmitHandlerTest, Integer> creator)
+    void shouldRetransmitOnNak(final BiConsumer<RetransmitHandlerTest, Integer> creator)
     {
         createTermBuffer(creator, 5);
         handler.onNak(TERM_ID, offsetOfFrame(0), ALIGNED_FRAME_LENGTH, TERM_BUFFER_LENGTH, retransmitSender);
@@ -101,7 +102,7 @@ public class RetransmitHandlerTest
 
     @ParameterizedTest
     @MethodSource("consumers")
-    public void shouldNotRetransmitOnNakWhileInLinger(final BiConsumer<RetransmitHandlerTest, Integer> creator)
+    void shouldNotRetransmitOnNakWhileInLinger(final BiConsumer<RetransmitHandlerTest, Integer> creator)
     {
         createTermBuffer(creator, 5);
         handler.onNak(TERM_ID, offsetOfFrame(0), ALIGNED_FRAME_LENGTH, TERM_BUFFER_LENGTH, retransmitSender);
@@ -116,7 +117,7 @@ public class RetransmitHandlerTest
 
     @ParameterizedTest
     @MethodSource("consumers")
-    public void shouldRetransmitOnNakAfterLinger(final BiConsumer<RetransmitHandlerTest, Integer> creator)
+    void shouldRetransmitOnNakAfterLinger(final BiConsumer<RetransmitHandlerTest, Integer> creator)
     {
         createTermBuffer(creator, 5);
         handler.onNak(TERM_ID, offsetOfFrame(0), ALIGNED_FRAME_LENGTH, TERM_BUFFER_LENGTH, retransmitSender);
@@ -133,7 +134,7 @@ public class RetransmitHandlerTest
 
     @ParameterizedTest
     @MethodSource("consumers")
-    public void shouldRetransmitOnMultipleNaks(final BiConsumer<RetransmitHandlerTest, Integer> creator)
+    void shouldRetransmitOnMultipleNaks(final BiConsumer<RetransmitHandlerTest, Integer> creator)
     {
         createTermBuffer(creator, 5);
         handler.onNak(TERM_ID, offsetOfFrame(0), ALIGNED_FRAME_LENGTH, TERM_BUFFER_LENGTH, retransmitSender);
@@ -148,7 +149,7 @@ public class RetransmitHandlerTest
 
     @ParameterizedTest
     @MethodSource("consumers")
-    public void shouldRetransmitOnNakOverMessageLength(final BiConsumer<RetransmitHandlerTest, Integer> creator)
+    void shouldRetransmitOnNakOverMessageLength(final BiConsumer<RetransmitHandlerTest, Integer> creator)
     {
         createTermBuffer(creator, 10);
         handler.onNak(TERM_ID, offsetOfFrame(0), ALIGNED_FRAME_LENGTH * 5, TERM_BUFFER_LENGTH, retransmitSender);
@@ -160,7 +161,7 @@ public class RetransmitHandlerTest
 
     @ParameterizedTest
     @MethodSource("consumers")
-    public void shouldRetransmitOnNakOverMtuLength(final BiConsumer<RetransmitHandlerTest, Integer> creator)
+    void shouldRetransmitOnNakOverMtuLength(final BiConsumer<RetransmitHandlerTest, Integer> creator)
     {
         final int numFramesPerMtu = MTU_LENGTH / ALIGNED_FRAME_LENGTH;
         createTermBuffer(creator, numFramesPerMtu * 5);
@@ -173,7 +174,7 @@ public class RetransmitHandlerTest
 
     @ParameterizedTest
     @MethodSource("consumers")
-    public void shouldStopRetransmitOnRetransmitReception(final BiConsumer<RetransmitHandlerTest, Integer> creator)
+    void shouldStopRetransmitOnRetransmitReception(final BiConsumer<RetransmitHandlerTest, Integer> creator)
     {
         createTermBuffer(creator, 5);
         handler.onNak(TERM_ID, offsetOfFrame(0), ALIGNED_FRAME_LENGTH, TERM_BUFFER_LENGTH, retransmitSender);
@@ -186,7 +187,7 @@ public class RetransmitHandlerTest
 
     @ParameterizedTest
     @MethodSource("consumers")
-    public void shouldStopOneRetransmitOnRetransmitReception(final BiConsumer<RetransmitHandlerTest, Integer> creator)
+    void shouldStopOneRetransmitOnRetransmitReception(final BiConsumer<RetransmitHandlerTest, Integer> creator)
     {
         createTermBuffer(creator, 5);
         handler.onNak(TERM_ID, offsetOfFrame(0), ALIGNED_FRAME_LENGTH, TERM_BUFFER_LENGTH, retransmitSender);
@@ -200,7 +201,7 @@ public class RetransmitHandlerTest
 
     @ParameterizedTest
     @MethodSource("consumers")
-    public void shouldImmediateRetransmitOnNak(final BiConsumer<RetransmitHandlerTest, Integer> creator)
+    void shouldImmediateRetransmitOnNak(final BiConsumer<RetransmitHandlerTest, Integer> creator)
     {
         createTermBuffer(creator, 5);
         handler = newZeroDelayRetransmitHandler();
@@ -212,7 +213,7 @@ public class RetransmitHandlerTest
 
     @ParameterizedTest
     @MethodSource("consumers")
-    public void shouldGoIntoLingerOnImmediateRetransmit(final BiConsumer<RetransmitHandlerTest, Integer> creator)
+    void shouldGoIntoLingerOnImmediateRetransmit(final BiConsumer<RetransmitHandlerTest, Integer> creator)
     {
         createTermBuffer(creator, 5);
         handler = newZeroDelayRetransmitHandler();
@@ -227,7 +228,7 @@ public class RetransmitHandlerTest
 
     @ParameterizedTest
     @MethodSource("consumers")
-    public void shouldOnlyRetransmitOnNakWhenConfiguredTo(final BiConsumer<RetransmitHandlerTest, Integer> creator)
+    void shouldOnlyRetransmitOnNakWhenConfiguredTo(final BiConsumer<RetransmitHandlerTest, Integer> creator)
     {
         createTermBuffer(creator, 5);
         handler.onNak(TERM_ID, offsetOfFrame(0), ALIGNED_FRAME_LENGTH, TERM_BUFFER_LENGTH, retransmitSender);
@@ -253,8 +254,17 @@ public class RetransmitHandlerTest
     private void addSentDataFrame()
     {
         rcvBuffer.putBytes(0, DATA);
-        termAppender.appendUnfragmentedMessage(
-            headerWriter, rcvBuffer, 0, DATA.length, RESERVED_VALUE_SUPPLIER, TERM_ID);
+
+        final int frameLength = DATA.length + HEADER_LENGTH;
+        final int alignedLength = align(frameLength, FRAME_ALIGNMENT);
+        final long rawTail = LogBufferDescriptor.packTail(TERM_ID, alignedLength);
+
+        LogBufferDescriptor.rawTail(metaDataBuffer, 0, rawTail);
+
+        headerWriter.write(termBuffer, 0, frameLength, TERM_ID);
+        termBuffer.putBytes(HEADER_LENGTH, rcvBuffer, 0, DATA.length);
+
+        frameLengthOrdered(termBuffer, 0, frameLength);
     }
 
     private void addReceivedDataFrame(final int msgNum)

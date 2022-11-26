@@ -591,7 +591,7 @@ public class LogBufferDescriptor
 
     /**
      * Compute the total length of a log file given the term length.
-     *
+     * <p>
      * Assumes {@link #TERM_MAX_LENGTH} is 1 GB and that filePageSize is 1 GB or less and a power of 2.
      *
      * @param termLength   on which to base the calculation.
@@ -609,7 +609,7 @@ public class LogBufferDescriptor
     }
 
     /**
-     * Store the default frame header to the log meta data buffer.
+     * Store the default frame header to the log metadata buffer.
      *
      * @param metadataBuffer into which the default headers should be stored.
      * @param defaultHeader  to be stored.
@@ -653,7 +653,7 @@ public class LogBufferDescriptor
 
     /**
      * Rotate the log and update the tail counter for the new term.
-     *
+     * <p>
      * This method is safe for concurrent use.
      *
      * @param metadataBuffer for the log.
@@ -671,7 +671,7 @@ public class LogBufferDescriptor
         long rawTail;
         do
         {
-            rawTail = rawTail(metadataBuffer, nextIndex);
+            rawTail = rawTailVolatile(metadataBuffer, nextIndex);
             if (expectedTermId != termId(rawTail))
             {
                 break;

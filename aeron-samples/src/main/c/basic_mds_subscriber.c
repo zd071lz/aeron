@@ -53,7 +53,7 @@ void sigint_handler(int signal)
     AERON_PUT_ORDERED(running, false);
 }
 
-inline bool is_running()
+inline bool is_running(void)
 {
     bool result;
     AERON_GET_VOLATILE(result, running);
@@ -94,7 +94,7 @@ int main(int argc, char **argv)
     aeron_fragment_assembler_t *fragment_assembler = NULL;
     const char *channel = DEFAULT_CHANNEL;
     const char *aeron_dir = NULL;
-    const uint64_t idle_duration_ns = 1000ul * 1000ul; /* 1ms */
+    const uint64_t idle_duration_ns = UINT64_C(1000) * UINT64_C(1000); /* 1ms */
     int32_t stream_id = DEFAULT_STREAM_ID;
 
     while ((opt = getopt(argc, argv, "hvc:p:s:")) != -1)
@@ -246,4 +246,4 @@ cleanup:
     return status;
 }
 
-extern bool is_running();
+extern bool is_running(void);

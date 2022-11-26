@@ -16,7 +16,7 @@
 package io.aeron.cluster;
 
 import io.aeron.cluster.client.ClusterException;
-import io.aeron.log.EventLogExtension;
+import io.aeron.test.EventLogExtension;
 import io.aeron.test.InterruptAfter;
 import io.aeron.test.InterruptingTestCallback;
 import io.aeron.test.SlowTest;
@@ -36,7 +36,7 @@ import static io.aeron.test.cluster.TestCluster.aCluster;
 
 @SlowTest
 @ExtendWith({ EventLogExtension.class, InterruptingTestCallback.class })
-public class FailedFirstElectionClusterTest
+class FailedFirstElectionClusterTest
 {
     private static ClusterInstrumentor clusterInstrumentor;
 
@@ -53,7 +53,7 @@ public class FailedFirstElectionClusterTest
     }
 
     @RegisterExtension
-    public final SystemTestWatcher systemTestWatcher = new SystemTestWatcher();
+    final SystemTestWatcher systemTestWatcher = new SystemTestWatcher();
 
     public static class FailFirstElectionIntercept
     {
@@ -77,7 +77,7 @@ public class FailedFirstElectionClusterTest
     @Test
     @EnabledForJreRange(min = JRE.JAVA_11)
     @InterruptAfter(60)
-    public void shouldRecoverWhenFollowerIsMultipleTermsBehindFromEmptyLog()
+    void shouldRecoverWhenFollowerIsMultipleTermsBehindFromEmptyLog()
     {
         final int numNodes = 3;
         final int messageCount = 10;

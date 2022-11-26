@@ -278,8 +278,6 @@ typedef struct aeron_driver_conductor_stct
     int64_t *errors_counter;
     int64_t *unblocked_commands_counter;
     int64_t *client_timeouts_counter;
-    int64_t *max_cycle_time_counter;
-    int64_t *cycle_time_threshold_exceeded_counter;
 
     int64_t clock_update_deadline_ns;
 
@@ -410,7 +408,8 @@ void aeron_driver_conductor_cleanup_spies(
 void aeron_driver_conductor_cleanup_network_publication(
     aeron_driver_conductor_t *conductor, aeron_network_publication_t *publication);
 
-void aeron_driver_conductor_on_command(int32_t msg_type_id, const void *message, size_t length, void *clientd);
+aeron_rb_read_action_t aeron_driver_conductor_on_command(
+    int32_t msg_type_id, const void *message, size_t length, void *clientd);
 
 int aeron_driver_conductor_do_work(void *clientd);
 

@@ -67,6 +67,20 @@ set(CMAKE_EXTRA_INCLUDE_FILES)
 check_symbol_exists(recvmmsg "sys/socket.h" RECVMMSG_PROTOTYPE_EXISTS)
 check_symbol_exists(sendmmsg "sys/socket.h" SENDMMSG_PROTOTYPE_EXISTS)
 check_symbol_exists(fallocate "fcntl.h" FALLOCATE_PROTOTYPE_EXISTS)
+check_symbol_exists(posix_fallocate "fcntl.h" POSIX_FALLOCATE_PROTOTYPE_EXISTS)
+check_symbol_exists(F_PREALLOCATE "fcntl.h" F_PREALLOCATE_PROTOTYPE_EXISTS)
+
+if (FALLOCATE_PROTOTYPE_EXISTS)
+    add_definitions(-DHAVE_FALLOCATE)
+endif ()
+
+if (POSIX_FALLOCATE_PROTOTYPE_EXISTS)
+    add_definitions(-DHAVE_POSIX_FALLOCATE)
+endif ()
+
+if (F_PREALLOCATE_PROTOTYPE_EXISTS)
+    add_definitions(-DHAVE_F_PREALLOCATE)
+endif ()
 
 if (ARC4RANDOM_PROTOTYPE_EXISTS)
     add_definitions(-DHAVE_ARC4RANDOM)
@@ -108,10 +122,6 @@ if (SENDMMSG_PROTOTYPE_EXISTS)
     add_definitions(-DHAVE_SENDMMSG)
 endif ()
 
-if (FALLOCATE_PROTOTYPE_EXISTS)
-    add_definitions(-DHAVE_FALLOCATE)
-endif ()
-
 SET(C_CLIENT_SOURCE
     ${AERON_C_CLIENT_SOURCE_PATH}/collections/aeron_array_to_ptr_hash_map.c
     ${AERON_C_CLIENT_SOURCE_PATH}/collections/aeron_bit_set.c
@@ -126,13 +136,11 @@ SET(C_CLIENT_SOURCE
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_broadcast_transmitter.c
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_counters_manager.c
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_distinct_error_log.c
-    ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_exclusive_term_appender.c
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_logbuffer_descriptor.c
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_mpsc_concurrent_array_queue.c
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_mpsc_rb.c
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_spsc_concurrent_array_queue.c
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_spsc_rb.c
-    ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_term_appender.c
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_term_gap_filler.c
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_term_gap_scanner.c
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_term_rebuilder.c
@@ -195,14 +203,12 @@ set(C_CLIENT_HEADERS
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_concurrent_array_queue.h
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_counters_manager.h
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_distinct_error_log.h
-    ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_exclusive_term_appender.h
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_logbuffer_descriptor.h
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_mpsc_concurrent_array_queue.h
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_mpsc_rb.h
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_rb.h
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_spsc_concurrent_array_queue.h
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_spsc_rb.h
-    ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_term_appender.h
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_term_gap_filler.h
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_term_gap_scanner.h
     ${AERON_C_CLIENT_SOURCE_PATH}/concurrent/aeron_term_rebuilder.h
@@ -312,6 +318,7 @@ SET(HEADERS
     aeron_driver_receiver_proxy.h
     aeron_driver_sender.h
     aeron_driver_sender_proxy.h
+    aeron_duty_cycle_tracker.h
     aeron_flow_control.h
     aeron_ipc_publication.h
     aeron_loss_detector.h

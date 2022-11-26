@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-if (MSVC AND "${CMAKE_SYSTEM_NAME}" MATCHES "Windows")
-    set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
-    set(BUILD_SHARED_LIBS ON)
-endif ()
+include(CheckSymbolExists)
 
 if (MSVC AND "${CMAKE_SYSTEM_NAME}" MATCHES "Windows")
     set(AERON_LIB_WINSOCK_LIBS wsock32 ws2_32 Iphlpapi)
@@ -38,6 +35,27 @@ if ("${CMAKE_SYSTEM_NAME}" MATCHES "Linux")
     add_definitions(-D_DEFAULT_SOURCE)
 endif ()
 
+check_symbol_exists(fallocate "fcntl.h" FALLOCATE_PROTOTYPE_EXISTS)
+check_symbol_exists(posix_fallocate "fcntl.h" POSIX_FALLOCATE_PROTOTYPE_EXISTS)
+check_symbol_exists(F_PREALLOCATE "fcntl.h" F_PREALLOCATE_PROTOTYPE_EXISTS)
+
+if (FALLOCATE_PROTOTYPE_EXISTS)
+    add_definitions(-DHAVE_FALLOCATE)
+endif ()
+
+if (POSIX_FALLOCATE_PROTOTYPE_EXISTS)
+    add_definitions(-DHAVE_POSIX_FALLOCATE)
+endif ()
+
+if (F_PREALLOCATE_PROTOTYPE_EXISTS)
+    add_definitions(-DHAVE_F_PREALLOCATE)
+endif ()
+
+if (MSVC AND "${CMAKE_SYSTEM_NAME}" MATCHES "Windows")
+    set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+    set(BUILD_SHARED_LIBS ON)
+endif ()
+
 set(SOURCE
     collections/aeron_array_to_ptr_hash_map.c
     collections/aeron_bit_set.c
@@ -52,13 +70,11 @@ set(SOURCE
     concurrent/aeron_broadcast_transmitter.c
     concurrent/aeron_counters_manager.c
     concurrent/aeron_distinct_error_log.c
-    concurrent/aeron_exclusive_term_appender.c
     concurrent/aeron_logbuffer_descriptor.c
     concurrent/aeron_mpsc_concurrent_array_queue.c
     concurrent/aeron_mpsc_rb.c
     concurrent/aeron_spsc_concurrent_array_queue.c
     concurrent/aeron_spsc_rb.c
-    concurrent/aeron_term_appender.c
     concurrent/aeron_term_gap_filler.c
     concurrent/aeron_term_gap_scanner.c
     concurrent/aeron_term_rebuilder.c
@@ -122,14 +138,12 @@ set(HEADERS
     concurrent/aeron_concurrent_array_queue.h
     concurrent/aeron_counters_manager.h
     concurrent/aeron_distinct_error_log.h
-    concurrent/aeron_exclusive_term_appender.h
     concurrent/aeron_logbuffer_descriptor.h
     concurrent/aeron_mpsc_concurrent_array_queue.h
     concurrent/aeron_mpsc_rb.h
     concurrent/aeron_rb.h
     concurrent/aeron_spsc_concurrent_array_queue.h
     concurrent/aeron_spsc_rb.h
-    concurrent/aeron_term_appender.h
     concurrent/aeron_term_gap_filler.h
     concurrent/aeron_term_gap_scanner.h
     concurrent/aeron_term_rebuilder.h

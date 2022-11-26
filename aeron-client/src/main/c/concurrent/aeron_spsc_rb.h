@@ -29,14 +29,16 @@ struct iovec
 };
 #endif
 
-typedef struct aeron_spsc_rb_stct
+#define AERON_SPSC_RB_MIN_CAPACITY (2 * AERON_RB_RECORD_HEADER_LENGTH)
+
+struct aeron_spsc_rb_stct
 {
     uint8_t *buffer;
     aeron_rb_descriptor_t *descriptor;
     size_t capacity;
     size_t max_message_length;
-}
-aeron_spsc_rb_t;
+};
+typedef struct aeron_spsc_rb_stct aeron_spsc_rb_t;
 
 int aeron_spsc_rb_init(aeron_spsc_rb_t *ring_buffer, void *buffer, size_t length);
 
@@ -55,8 +57,53 @@ int aeron_spsc_rb_abort(aeron_spsc_rb_t *ring_buffer, int32_t offset);
 size_t aeron_spsc_rb_read(
     aeron_spsc_rb_t *ring_buffer, aeron_rb_handler_t handler, void *clientd, size_t message_count_limit);
 
+size_t aeron_spsc_rb_controlled_read(
+    aeron_spsc_rb_t *ring_buffer, aeron_rb_controlled_handler_t handler, void *clientd, size_t message_count_limit);
+
 int64_t aeron_spsc_rb_next_correlation_id(aeron_spsc_rb_t *ring_buffer);
 
 void aeron_spsc_rb_consumer_heartbeat_time(aeron_spsc_rb_t *ring_buffer, int64_t time_ms);
+
+inline int64_t aeron_spsc_rb_consumer_position(aeron_spsc_rb_t *ring_buffer)
+{
+    int64_t position;
+    AERON_GET_VOLATILE(position, ring_buffer->descriptor->head_position);
+    return position;
+}
+
+inline int64_t aeron_spsc_rb_producer_position(aeron_spsc_rb_t *ring_buffer)
+{
+    int64_t position;
+    AERON_GET_VOLATILE(position, ring_buffer->descriptor->tail_position);
+    return position;
+}
+
+inline int64_t aeron_spsc_rb_size(aeron_spsc_rb_t *ring_buffer)
+{
+    int64_t consumer_position_before;
+    int64_t producer_position;
+    int64_t consumer_position_after;
+
+    do
+    {
+        consumer_position_before = aeron_spsc_rb_consumer_position(ring_buffer);
+        producer_position = aeron_spsc_rb_producer_position(ring_buffer);
+        consumer_position_after = aeron_spsc_rb_consumer_position(ring_buffer);
+    }
+    while (consumer_position_before != consumer_position_after);
+
+    const int64_t size = producer_position - consumer_position_after;
+
+    if (size < 0)
+    {
+        return 0;
+    }
+    else if (size > (int64_t)ring_buffer->capacity)
+    {
+        return (int64_t)ring_buffer->capacity;
+    }
+
+    return size;
+}
 
 #endif //AERON_SPSC_RB_H

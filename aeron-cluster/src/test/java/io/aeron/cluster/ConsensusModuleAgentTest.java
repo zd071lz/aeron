@@ -15,17 +15,26 @@
  */
 package io.aeron.cluster;
 
-import io.aeron.*;
+import io.aeron.Aeron;
+import io.aeron.ChannelUri;
+import io.aeron.ConcurrentPublication;
+import io.aeron.Counter;
+import io.aeron.ExclusivePublication;
+import io.aeron.Subscription;
+import io.aeron.UnavailableImageHandler;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.client.ControlResponsePoller;
 import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.codecs.ClusterAction;
 import io.aeron.cluster.codecs.EventCode;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusterMarkFile;
 import io.aeron.cluster.service.ClusterTerminationException;
+import io.aeron.driver.DutyCycleTracker;
 import io.aeron.security.AuthorisationService;
 import io.aeron.security.DefaultAuthenticatorSupplier;
 import io.aeron.status.ReadableCounter;
+import io.aeron.test.TestContexts;
 import io.aeron.test.Tests;
 import io.aeron.test.cluster.TestClusterClock;
 import org.agrona.collections.MutableLong;
@@ -34,24 +43,38 @@ import org.agrona.concurrent.CountedErrorHandler;
 import org.agrona.concurrent.NoOpIdleStrategy;
 import org.agrona.concurrent.status.AtomicCounter;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
+import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongConsumer;
 
-import static io.aeron.cluster.ClusterControl.ToggleState.*;
+import static io.aeron.cluster.ClusterControl.ToggleState.NEUTRAL;
+import static io.aeron.cluster.ClusterControl.ToggleState.RESUME;
+import static io.aeron.cluster.ClusterControl.ToggleState.SUSPEND;
 import static io.aeron.cluster.ConsensusModule.Configuration.SESSION_LIMIT_MSG;
 import static io.aeron.cluster.ConsensusModuleAgent.SLOW_TICK_INTERVAL_NS;
 import static io.aeron.cluster.client.AeronCluster.Configuration.PROTOCOL_SEMANTIC_VERSION;
 import static java.lang.Boolean.TRUE;
+import static java.util.Collections.emptyList;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.anyString;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 public class ConsensusModuleAgentTest
 {
@@ -67,7 +90,7 @@ public class ConsensusModuleAgentTest
     private final Counter mockTimedOutClientCounter = mock(Counter.class);
     private final LongConsumer mockTimeConsumer = mock(LongConsumer.class);
 
-    private final ConsensusModule.Context ctx = new ConsensusModule.Context()
+    private final ConsensusModule.Context ctx = TestContexts.localhostConsensusModule()
         .errorHandler(Tests::onError)
         .errorCounter(mock(AtomicCounter.class))
         .moduleStateCounter(mock(Counter.class))
@@ -85,7 +108,8 @@ public class ConsensusModuleAgentTest
         .clusterMarkFile(mock(ClusterMarkFile.class))
         .archiveContext(new AeronArchive.Context())
         .logPublisher(mockLogPublisher)
-        .egressPublisher(mockEgressPublisher);
+        .egressPublisher(mockEgressPublisher)
+        .dutyCycleTracker(new DutyCycleTracker());
 
     @BeforeEach
     public void before()
@@ -370,5 +394,35 @@ public class ConsensusModuleAgentTest
         verify(mockAeron).asyncAddPublication(channelCaptor.capture(), eq(responseStreamId));
 
         assertEquals(ChannelUri.parse(expectedResponseChannel), ChannelUri.parse(channelCaptor.getValue()));
+    }
+
+    @Test
+    @Disabled
+    void shouldSkipRecoveryWhenUsingBootStrapState()
+    {
+        try (MockedStatic<AeronArchive> aeronArchiveStaticMock = mockStatic(AeronArchive.class))
+        {
+            final AeronArchive aeronArchiveMock = mock(AeronArchive.class);
+            final ControlResponsePoller mockControlResponsePoller = mock(ControlResponsePoller.class);
+            final Subscription subscription = mock(Subscription.class);
+            final RecordingLog recordingLog = mock(RecordingLog.class);
+            ctx.recordingLog(recordingLog);
+            aeronArchiveStaticMock.when(() -> AeronArchive.connect(any(AeronArchive.Context.class)))
+                .thenReturn(aeronArchiveMock);
+            when(aeronArchiveMock.controlResponsePoller()).thenReturn(mockControlResponsePoller);
+            when(mockControlResponsePoller.subscription()).thenReturn(subscription);
+
+            final ConsensusModuleStateExport consensusModuleStateExport = new ConsensusModuleStateExport(
+                1, 2, 3, 4, 5, emptyList(), emptyList(), emptyList());
+
+            final TestClusterClock clock = new TestClusterClock(TimeUnit.MILLISECONDS);
+            ctx
+                .bootstrapState(consensusModuleStateExport)
+                .epochClock(clock)
+                .clusterClock(clock);
+
+            final ConsensusModuleAgent consensusModuleAgent = new ConsensusModuleAgent(ctx);
+            consensusModuleAgent.onStart();
+        }
     }
 }

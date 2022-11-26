@@ -37,7 +37,8 @@ public final class BufferBuilder
     static final int INIT_MIN_CAPACITY = 4096;
 
     private final boolean isDirect;
-    private int limit = 0;
+    private int limit;
+    private int nextTermOffset;
     private final UnsafeBuffer buffer;
 
     /**
@@ -123,6 +124,26 @@ public final class BufferBuilder
     }
 
     /**
+     * Get the value which the next term offset for a fragment to be assembled should begin at.
+     *
+     * @return the value which the next term offset for a fragment to be assembled should begin at.
+     */
+    public int nextTermOffset()
+    {
+        return nextTermOffset;
+    }
+
+    /**
+     * Set the value which the next term offset for a fragment to be assembled should begin at.
+     *
+     * @param offset which the next term offset for a fragment to be assembled should begin at.
+     */
+    public void nextTermOffset(final int offset)
+    {
+        nextTermOffset = offset;
+    }
+
+    /**
      * The {@link MutableDirectBuffer} that encapsulates the internal buffer.
      *
      * @return the {@link MutableDirectBuffer} that encapsulates the internal buffer.
@@ -140,6 +161,7 @@ public final class BufferBuilder
     public BufferBuilder reset()
     {
         limit = 0;
+        nextTermOffset = 0;
         return this;
     }
 

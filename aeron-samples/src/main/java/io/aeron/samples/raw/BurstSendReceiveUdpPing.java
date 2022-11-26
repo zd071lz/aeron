@@ -18,6 +18,8 @@ package io.aeron.samples.raw;
 import io.aeron.driver.Configuration;
 import org.HdrHistogram.Histogram;
 import org.agrona.BitUtil;
+import org.agrona.SystemUtil;
+import org.agrona.concurrent.HighResolutionTimer;
 import org.agrona.concurrent.SigInt;
 import org.agrona.hints.ThreadHints;
 
@@ -66,6 +68,11 @@ public class BurstSendReceiveUdpPing
             burstSize = min(1024, Integer.parseInt(args[2]));
         }
 
+        if (SystemUtil.isWindows())
+        {
+            HighResolutionTimer.enable();
+        }
+
         System.out.printf("Remote host: %s, packet size: %d, burstSize: %d%n", remoteHost, packetSize, burstSize);
 
         final Histogram histogram = new Histogram(TimeUnit.SECONDS.toNanos(10), 3);
@@ -93,7 +100,7 @@ public class BurstSendReceiveUdpPing
 
             histogram.reset();
             System.gc();
-            LockSupport.parkNanos(1_000_000_000);
+            LockSupport.parkNanos(1_000_000_000L);
         }
     }
 
@@ -138,7 +145,7 @@ public class BurstSendReceiveUdpPing
                 final long receivedSequenceNumber = buffer.getLong(0);
                 if (receivedSequenceNumber != sequenceNumber + i)
                 {
-                    throw new IllegalStateException("Data Loss:" + sequenceNumber + " to " + receivedSequenceNumber);
+                    throw new IllegalStateException("Data Loss: " + sequenceNumber + " to " + receivedSequenceNumber);
                 }
 
                 final long durationNs = System.nanoTime() - buffer.getLong(BitUtil.SIZE_OF_LONG);

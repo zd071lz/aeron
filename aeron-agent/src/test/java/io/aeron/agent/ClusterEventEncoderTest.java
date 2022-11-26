@@ -49,7 +49,7 @@ class ClusterEventEncoderTest
         final int length = payload.length() + SIZE_OF_INT * 2;
         final int captureLength = captureLength(length);
 
-        final int encodedLength = encodeStateChange(buffer, offset, captureLength, length, from, to, memberId);
+        final int encodedLength = encodeStateChange(buffer, offset, captureLength, length, memberId, from, to);
 
         assertEquals(encodedLength(stateChangeLength(from, to)), encodedLength);
         assertEquals(captureLength, buffer.getInt(offset, LITTLE_ENDIAN));
@@ -76,15 +76,17 @@ class ClusterEventEncoderTest
         final int memberId = 5;
         final int leaderId = 42;
         final int logSessionId = 18;
+        final int appVersion = 777;
         final long termBaseLogPosition = 23874;
         final long leaderRecordingId = 9;
         final boolean isStartup = true;
 
-        final int encodedLength = encodeNewLeadershipTerm(
+        final int encodedLength = encodeOnNewLeadershipTerm(
             buffer,
             offset,
             captureLength,
             length,
+            memberId,
             logLeadershipTermId,
             nextLeadershipTermId,
             nextTermBaseLogPosition,
@@ -94,12 +96,13 @@ class ClusterEventEncoderTest
             logPosition,
             leaderRecordingId,
             timestamp,
-            memberId,
             leaderId,
             logSessionId,
+            appVersion,
             isStartup);
 
         assertEquals(encodedLength(newLeaderShipTermLength()), encodedLength);
+
         int index = offset;
         assertEquals(captureLength, buffer.getInt(index, LITTLE_ENDIAN));
         index += SIZE_OF_INT;
@@ -131,13 +134,16 @@ class ClusterEventEncoderTest
         index += SIZE_OF_INT;
         assertEquals(logSessionId, buffer.getInt(index, LITTLE_ENDIAN));
         index += SIZE_OF_INT;
+        assertEquals(appVersion, buffer.getInt(index, LITTLE_ENDIAN));
+        index += SIZE_OF_INT;
+
         assertEquals(isStartup, 1 == buffer.getInt(index, LITTLE_ENDIAN));
     }
 
     @Test
     void testNewLeaderShipTermLength()
     {
-        assertEquals(SIZE_OF_LONG * 9 + SIZE_OF_INT * 3 + SIZE_OF_BYTE, newLeaderShipTermLength());
+        assertEquals(SIZE_OF_LONG * 9 + SIZE_OF_INT * 4 + SIZE_OF_BYTE, newLeaderShipTermLength());
     }
 
     @Test
@@ -182,9 +188,9 @@ class ClusterEventEncoderTest
             offset,
             captureLength,
             length,
+            memberId,
             null,
             to,
-            memberId,
             leaderId,
             candidateTermId,
             leadershipTermId,
@@ -202,10 +208,6 @@ class ClusterEventEncoderTest
         index += SIZE_OF_INT;
         assertNotEquals(0, buffer.getLong(index, LITTLE_ENDIAN));
         index += SIZE_OF_LONG;
-        assertEquals(memberId, buffer.getInt(index, LITTLE_ENDIAN));
-        index += SIZE_OF_INT;
-        assertEquals(leaderId, buffer.getInt(index, LITTLE_ENDIAN));
-        index += SIZE_OF_INT;
         assertEquals(candidateTermId, buffer.getLong(index, LITTLE_ENDIAN));
         index += SIZE_OF_LONG;
         assertEquals(leadershipTermId, buffer.getLong(index, LITTLE_ENDIAN));
@@ -218,6 +220,10 @@ class ClusterEventEncoderTest
         index += SIZE_OF_LONG;
         assertEquals(catchupPosition, buffer.getLong(index, LITTLE_ENDIAN));
         index += SIZE_OF_LONG;
+        assertEquals(memberId, buffer.getInt(index, LITTLE_ENDIAN));
+        index += SIZE_OF_INT;
+        assertEquals(leaderId, buffer.getInt(index, LITTLE_ENDIAN));
+        index += SIZE_OF_INT;
         assertEquals("null" + STATE_SEPARATOR + to.name(), buffer.getStringAscii(index));
     }
 
@@ -254,7 +260,7 @@ class ClusterEventEncoderTest
             newPosition);
 
         assertEquals(
-            encodedLength(SIZE_OF_INT + 8 * SIZE_OF_LONG + SIZE_OF_INT + stateName(state).length()),
+            encodedLength(SIZE_OF_INT + 8 * SIZE_OF_LONG + SIZE_OF_INT + enumName(state).length()),
             encodedLength);
         int index = offset;
         assertEquals(captureLength, buffer.getInt(index, LITTLE_ENDIAN));
@@ -263,8 +269,6 @@ class ClusterEventEncoderTest
         index += SIZE_OF_INT;
         assertNotEquals(0, buffer.getLong(index, LITTLE_ENDIAN));
         index += SIZE_OF_LONG;
-        assertEquals(memberId, buffer.getInt(index, LITTLE_ENDIAN));
-        index += SIZE_OF_INT;
         assertEquals(logLeadershipTermId, buffer.getLong(index, LITTLE_ENDIAN));
         index += SIZE_OF_LONG;
         assertEquals(leadershipTermId, buffer.getLong(index, LITTLE_ENDIAN));
@@ -281,7 +285,9 @@ class ClusterEventEncoderTest
         index += SIZE_OF_LONG;
         assertEquals(newPosition, buffer.getLong(index, LITTLE_ENDIAN));
         index += SIZE_OF_LONG;
-        assertEquals(stateName(state), buffer.getStringAscii(index, LITTLE_ENDIAN));
+        assertEquals(memberId, buffer.getInt(index, LITTLE_ENDIAN));
+        index += SIZE_OF_INT;
+        assertEquals(enumName(state), buffer.getStringAscii(index, LITTLE_ENDIAN));
     }
 
     private static List<TimeUnit> logEntryStates()

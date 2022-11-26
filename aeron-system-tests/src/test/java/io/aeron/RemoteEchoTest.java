@@ -56,7 +56,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @BindingsTest
 @ExtendWith(InterruptingTestCallback.class)
-public class RemoteEchoTest
+class RemoteEchoTest
 {
     private static final int SOURCE_DATA_LENGTH = 1024 * 1024;
     private static MediaDriver mediaDriver = null;
@@ -182,7 +182,7 @@ public class RemoteEchoTest
     }
 
     @Test
-    @InterruptAfter(10)
+    @InterruptAfter(20)
     void shouldHandleTenUnicastEchoPairs()
     {
         final List<Publication> pubs = new ArrayList<>();

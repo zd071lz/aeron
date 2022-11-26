@@ -24,7 +24,7 @@
 #pragma pack(4)
 typedef struct aeron_frame_header_stct
 {
-    int32_t frame_length;
+    volatile int32_t frame_length;
     int8_t version;
     uint8_t flags;
     int16_t type;
@@ -164,6 +164,7 @@ int aeron_udp_protocol_group_tag(aeron_status_message_header_t *sm, int64_t *gro
 #define AERON_DATA_HEADER_DEFAULT_RESERVED_VALUE (INT64_C(0))
 
 #define AERON_STATUS_MESSAGE_HEADER_SEND_SETUP_FLAG (UINT8_C(0x80))
+#define AERON_STATUS_MESSAGE_HEADER_EOS_FLAG (UINT8_C(0x40))
 
 #define AERON_RTTM_HEADER_REPLY_FLAG (UINT8_C(0x80))
 

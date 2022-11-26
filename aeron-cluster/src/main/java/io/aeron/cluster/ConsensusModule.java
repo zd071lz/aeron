@@ -22,12 +22,15 @@ import io.aeron.cluster.client.AeronCluster;
 import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.codecs.mark.ClusterComponentType;
 import io.aeron.cluster.service.*;
+import io.aeron.driver.DutyCycleTracker;
+import io.aeron.driver.status.DutyCycleStallTracker;
 import io.aeron.exceptions.ConcurrentConcludeException;
 import io.aeron.exceptions.ConfigurationException;
 import io.aeron.security.Authenticator;
 import io.aeron.security.AuthenticatorSupplier;
 import io.aeron.security.AuthorisationService;
 import io.aeron.security.AuthorisationServiceSupplier;
+import io.aeron.security.DefaultAuthenticatorSupplier;
 import org.agrona.*;
 import org.agrona.concurrent.*;
 import org.agrona.concurrent.errors.DistinctErrorLog;
@@ -43,10 +46,12 @@ import java.util.function.Function;
 import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 
+import static io.aeron.AeronCounters.validateCounterTypeId;
 import static io.aeron.CommonContext.*;
+import static io.aeron.cluster.ConsensusModule.Configuration.CLUSTER_NODE_ROLE_TYPE_ID;
+import static io.aeron.cluster.ConsensusModule.Configuration.COMMIT_POSITION_TYPE_ID;
 import static io.aeron.cluster.ConsensusModule.Configuration.*;
-import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.SNAPSHOT_CHANNEL_PROP_NAME;
-import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.SNAPSHOT_STREAM_ID_PROP_NAME;
+import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.*;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.util.concurrent.atomic.AtomicIntegerFieldUpdater.newUpdater;
 import static org.agrona.BitUtil.findNextPositivePowerOfTwo;
@@ -196,6 +201,7 @@ public final class ConsensusModule implements AutoCloseable
     private final Context ctx;
     private final ConsensusModuleAgent conductor;
     private final AgentRunner conductorRunner;
+    private final AgentInvoker conductorInvoker;
 
     ConsensusModule(final Context ctx)
     {
@@ -205,7 +211,18 @@ public final class ConsensusModule implements AutoCloseable
             this.ctx = ctx;
 
             conductor = new ConsensusModuleAgent(ctx);
-            conductorRunner = new AgentRunner(ctx.idleStrategy(), ctx.errorHandler(), ctx.errorCounter(), conductor);
+
+            if (ctx.useAgentInvoker())
+            {
+                conductorInvoker = new AgentInvoker(ctx.errorHandler(), ctx.errorCounter(), conductor);
+                conductorRunner = null;
+            }
+            else
+            {
+                conductorRunner = new AgentRunner(
+                    ctx.idleStrategy(), ctx.errorHandler(), ctx.errorCounter(), conductor);
+                conductorInvoker = null;
+            }
         }
         catch (final ConcurrentConcludeException ex)
         {
@@ -242,7 +259,15 @@ public final class ConsensusModule implements AutoCloseable
     public static ConsensusModule launch(final Context ctx)
     {
         final ConsensusModule consensusModule = new ConsensusModule(ctx);
-        AgentRunner.startOnThread(consensusModule.conductorRunner, ctx.threadFactory());
+
+        if (null != consensusModule.conductorRunner)
+        {
+            AgentRunner.startOnThread(consensusModule.conductorRunner, ctx.threadFactory());
+        }
+        else
+        {
+            consensusModule.conductorInvoker.start();
+        }
 
         return consensusModule;
     }
@@ -258,11 +283,21 @@ public final class ConsensusModule implements AutoCloseable
     }
 
     /**
+     * Get the {@link AgentInvoker} for the consensus module.
+     *
+     * @return the {@link AgentInvoker} for the consensus module.
+     */
+    public AgentInvoker conductorAgentInvoker()
+    {
+        return conductorInvoker;
+    }
+
+    /**
      * {@inheritDoc}
      */
     public void close()
     {
-        CloseHelper.close(conductorRunner);
+        CloseHelper.closeAll(conductorRunner, conductorInvoker);
     }
 
     /**
@@ -270,6 +305,32 @@ public final class ConsensusModule implements AutoCloseable
      */
     public static final class Configuration
     {
+        /**
+         * Major version of the network protocol from consensus module to consensus module. If these don't match then
+         * consensus modules are not compatible.
+         */
+        public static final int PROTOCOL_MAJOR_VERSION = 1;
+
+        /**
+         * Minor version of the network protocol from consensus module to consensus module. If these don't match then
+         * some features may not be available.
+         */
+        public static final int PROTOCOL_MINOR_VERSION = 0;
+
+        /**
+         * Patch version of the network protocol from consensus module to consensus module. If these don't match then
+         * bug fixes may not have been applied.
+         */
+        public static final int PROTOCOL_PATCH_VERSION = 0;
+
+        /**
+         * Combined semantic version for the client to consensus module protocol.
+         *
+         * @see SemanticVersion
+         */
+        public static final int PROTOCOL_SEMANTIC_VERSION = SemanticVersion.compose(
+            PROTOCOL_MAJOR_VERSION, PROTOCOL_MINOR_VERSION, PROTOCOL_PATCH_VERSION);
+
         /**
          * Type of snapshot for this component.
          */
@@ -296,7 +357,7 @@ public final class ConsensusModule implements AutoCloseable
         public static final String CLUSTER_INGRESS_IPC_ALLOWED_DEFAULT = "false";
 
         /**
-         * Service ID to identify a snapshot in the {@link RecordingLog}.
+         * Service ID to identify a snapshot in the {@link RecordingLog} for the consensus module.
          */
         public static final int SERVICE_ID = Aeron.NULL_VALUE;
 
@@ -335,12 +396,6 @@ public final class ConsensusModule implements AutoCloseable
          * is not provided when unicast.
          */
         public static final String CLUSTER_MEMBERS_PROP_NAME = "aeron.cluster.members";
-
-        /**
-         * Default property for the list of cluster member endpoints.
-         */
-        public static final String CLUSTER_MEMBERS_DEFAULT =
-            "0,localhost:20000,localhost:20001,localhost:20002,localhost:0,localhost:8010";
 
         /**
          * Property name for the comma separated list of cluster consensus endpoints used for adding passive
@@ -631,12 +686,6 @@ public final class ConsensusModule implements AutoCloseable
         public static final String AUTHENTICATOR_SUPPLIER_PROP_NAME = "aeron.cluster.authenticator.supplier";
 
         /**
-         * Name of the class to use as a supplier of {@link Authenticator} for the cluster. Default is
-         * a non-authenticating option.
-         */
-        public static final String AUTHENTICATOR_SUPPLIER_DEFAULT = "io.aeron.security.DefaultAuthenticatorSupplier";
-
-        /**
          * Name of the system property for specifying a supplier of {@link AuthorisationService} for the cluster.
          */
         public static final String AUTHORISATION_SERVICE_SUPPLIER_PROP_NAME =
@@ -663,6 +712,17 @@ public final class ConsensusModule implements AutoCloseable
          * Timeout a leader will wait on getting termination ACKs from followers.
          */
         public static final String TERMINATION_TIMEOUT_PROP_NAME = "aeron.cluster.termination.timeout";
+
+        /**
+         * Property name for threshold value for the consensus module agent work cycle threshold to track
+         * for being exceeded.
+         */
+        public static final String CYCLE_THRESHOLD_PROP_NAME = "aeron.cluster.cycle.threshold";
+
+        /**
+         * Default threshold value for the consensus module agent work cycle threshold to track for being exceeded.
+         */
+        public static final long CYCLE_THRESHOLD_DEFAULT_NS = TimeUnit.MILLISECONDS.toNanos(1000);
 
         /**
          * Default timeout a leader will wait on getting termination ACKs from followers.
@@ -785,15 +845,13 @@ public final class ConsensusModule implements AutoCloseable
         }
 
         /**
-         * The value {@link #CLUSTER_MEMBERS_DEFAULT} or system property
-         * {@link #CLUSTER_MEMBERS_PROP_NAME} if set.
+         * The value of system property {@link #CLUSTER_MEMBERS_PROP_NAME} if set, null otherwise.
          *
-         * @return {@link #CLUSTER_MEMBERS_DEFAULT} or system property
-         * {@link #CLUSTER_MEMBERS_PROP_NAME} if set.
+         * @return of system property {@link #CLUSTER_MEMBERS_PROP_NAME} if set.
          */
         public static String clusterMembers()
         {
-            return System.getProperty(CLUSTER_MEMBERS_PROP_NAME, CLUSTER_MEMBERS_DEFAULT);
+            return System.getProperty(CLUSTER_MEMBERS_PROP_NAME);
         }
 
         /**
@@ -990,6 +1048,16 @@ public final class ConsensusModule implements AutoCloseable
         }
 
         /**
+         * Get threshold value for the consensus module agent work cycle threshold to track for being exceeded.
+         *
+         * @return threshold value in nanoseconds.
+         */
+        public static long cycleThresholdNs()
+        {
+            return getDurationInNanos(CYCLE_THRESHOLD_PROP_NAME, CYCLE_THRESHOLD_DEFAULT_NS);
+        }
+
+        /**
          * Size in bytes of the error buffer in the mark file.
          *
          * @return length of error buffer in bytes.
@@ -1001,16 +1069,19 @@ public final class ConsensusModule implements AutoCloseable
         }
 
         /**
-         * The value {@link #AUTHENTICATOR_SUPPLIER_DEFAULT} or system property
+         * The value {@link DefaultAuthenticatorSupplier#INSTANCE} or system property
          * {@link #AUTHENTICATOR_SUPPLIER_PROP_NAME} if set.
          *
-         * @return {@link #AUTHENTICATOR_SUPPLIER_DEFAULT} or system property
+         * @return {@link DefaultAuthenticatorSupplier#INSTANCE} or system property
          * {@link #AUTHENTICATOR_SUPPLIER_PROP_NAME} if set.
          */
         public static AuthenticatorSupplier authenticatorSupplier()
         {
-            final String supplierClassName = System.getProperty(
-                AUTHENTICATOR_SUPPLIER_PROP_NAME, AUTHENTICATOR_SUPPLIER_DEFAULT);
+            final String supplierClassName = System.getProperty(AUTHENTICATOR_SUPPLIER_PROP_NAME);
+            if (Strings.isEmpty(supplierClassName))
+            {
+                return DefaultAuthenticatorSupplier.INSTANCE;
+            }
 
             AuthenticatorSupplier supplier = null;
             try
@@ -1240,6 +1311,7 @@ public final class ConsensusModule implements AutoCloseable
         private long electionStatusIntervalNs = Configuration.electionStatusIntervalNs();
         private long dynamicJoinIntervalNs = Configuration.dynamicJoinIntervalNs();
         private long terminationTimeoutNs = Configuration.terminationTimeoutNs();
+        private long cycleThresholdNs = Configuration.cycleThresholdNs();
 
         private String agentRoleName = Configuration.agentRoleName();
         private ThreadFactory threadFactory;
@@ -1270,7 +1342,11 @@ public final class ConsensusModule implements AutoCloseable
         private AuthorisationServiceSupplier authorisationServiceSupplier;
         private LogPublisher logPublisher;
         private EgressPublisher egressPublisher;
+        private DutyCycleTracker dutyCycleTracker;
+        private AppVersionValidator appVersionValidator;
         private boolean isLogMdc;
+        private boolean useAgentInvoker = false;
+        private ConsensusModuleStateExport boostrapState = null;
 
         /**
          * Perform a shallow copy of the object.
@@ -1309,6 +1385,11 @@ public final class ConsensusModule implements AutoCloseable
                 clusterDir = new File(clusterDirectoryName);
             }
 
+            if (null == clusterMembers)
+            {
+                throw new ClusterException("ConsensusModule.Context.clusterMembers must be set");
+            }
+
             if (deleteDirOnStart)
             {
                 IoUtil.delete(clusterDir, false);
@@ -1329,6 +1410,11 @@ public final class ConsensusModule implements AutoCloseable
                 epochClock = SystemEpochClock.INSTANCE;
             }
 
+            if (null == appVersionValidator)
+            {
+                appVersionValidator = AppVersionValidator.SEMANTIC_VERSIONING_VALIDATOR;
+            }
+
             if (null == clusterTimeConsumerSupplier)
             {
                 clusterTimeConsumerSupplier = (ctx) -> (timestamp) -> {};
@@ -1341,7 +1427,7 @@ public final class ConsensusModule implements AutoCloseable
                     ClusterComponentType.CONSENSUS_MODULE,
                     errorBufferLength,
                     epochClock,
-                    0);
+                    LIVENESS_TIMEOUT_MS);
             }
 
             if (null == errorLog)
@@ -1374,6 +1460,14 @@ public final class ConsensusModule implements AutoCloseable
                 {
                     errorCounter = aeron.addCounter(
                         CONSENSUS_MODULE_ERROR_COUNT_TYPE_ID, "Cluster Errors - clusterId=" + clusterId);
+                }
+            }
+            else
+            {
+                if (!aeron.context().useConductorAgentInvoker())
+                {
+                    throw new ClusterException(
+                        "Supplied Aeron client instance must set Aeron.Context.useConductorInvoker(true)");
                 }
             }
 
@@ -1417,41 +1511,63 @@ public final class ConsensusModule implements AutoCloseable
                 moduleStateCounter = ClusterCounters.allocate(
                     aeron, buffer, "Consensus Module state", CONSENSUS_MODULE_STATE_TYPE_ID, clusterId);
             }
+            validateCounterTypeId(aeron, moduleStateCounter, CONSENSUS_MODULE_STATE_TYPE_ID);
+
 
             if (null == electionStateCounter)
             {
                 electionStateCounter = ClusterCounters.allocate(
                     aeron, buffer, "Cluster election state", ELECTION_STATE_TYPE_ID, clusterId);
             }
+            validateCounterTypeId(aeron, electionStateCounter, ELECTION_STATE_TYPE_ID);
+
 
             if (null == clusterNodeRoleCounter)
             {
                 clusterNodeRoleCounter = ClusterCounters.allocate(
                     aeron, buffer, "Cluster node role", CLUSTER_NODE_ROLE_TYPE_ID, clusterId);
             }
+            validateCounterTypeId(aeron, clusterNodeRoleCounter, CLUSTER_NODE_ROLE_TYPE_ID);
+
 
             if (null == commitPosition)
             {
                 commitPosition = ClusterCounters.allocate(
                     aeron, buffer, "Cluster commit-pos:", COMMIT_POSITION_TYPE_ID, clusterId);
             }
+            validateCounterTypeId(aeron, commitPosition, COMMIT_POSITION_TYPE_ID);
 
             if (null == controlToggle)
             {
                 controlToggle = ClusterCounters.allocate(
                     aeron, buffer, "Cluster control toggle", CONTROL_TOGGLE_TYPE_ID, clusterId);
             }
+            validateCounterTypeId(aeron, controlToggle, CONTROL_TOGGLE_TYPE_ID);
 
             if (null == snapshotCounter)
             {
                 snapshotCounter = ClusterCounters.allocate(
                     aeron, buffer, "Cluster snapshot count", SNAPSHOT_COUNTER_TYPE_ID, clusterId);
             }
+            validateCounterTypeId(aeron, snapshotCounter, SNAPSHOT_COUNTER_TYPE_ID);
 
             if (null == timedOutClientCounter)
             {
                 timedOutClientCounter = ClusterCounters.allocate(
                     aeron, buffer, "Cluster timed out client count", CLUSTER_CLIENT_TIMEOUT_COUNT_TYPE_ID, clusterId);
+            }
+            validateCounterTypeId(aeron, timedOutClientCounter, CLUSTER_CLIENT_TIMEOUT_COUNT_TYPE_ID);
+
+            if (null == dutyCycleTracker)
+            {
+                dutyCycleTracker = new DutyCycleStallTracker(
+                    ClusterCounters.allocate(
+                        aeron, buffer, "Cluster max cycle time in ns",
+                        AeronCounters.CLUSTER_MAX_CYCLE_TIME_TYPE_ID, clusterId),
+                    ClusterCounters.allocate(
+                        aeron, buffer, "Cluster work cycle time exceeded count: threshold=" + cycleThresholdNs + "ns",
+                        AeronCounters.CLUSTER_CYCLE_TIME_THRESHOLD_EXCEEDED_TYPE_ID, clusterId),
+                    cycleThresholdNs);
             }
 
             if (null == threadFactory)
@@ -1657,6 +1773,32 @@ public final class ConsensusModule implements AutoCloseable
         public int appVersion()
         {
             return appVersion;
+        }
+
+        /**
+         * User assigned application version validator implementation used to check version compatibility.
+         * <p>
+         * The default validator uses {@link org.agrona.SemanticVersion} semantics.
+         *
+         * @param appVersionValidator for user application.
+         * @return this for fluent API.
+         */
+        public Context appVersionValidator(final AppVersionValidator appVersionValidator)
+        {
+            this.appVersionValidator = appVersionValidator;
+            return this;
+        }
+
+        /**
+         * User assigned application version validator implementation used to check version compatibility.
+         * <p>
+         * The default is to use {@link org.agrona.SemanticVersion} major version for checking compatibility.
+         *
+         * @return AppVersionValidator in use.
+         */
+        public AppVersionValidator appVersionValidator()
+        {
+            return appVersionValidator;
         }
 
         /**
@@ -2673,6 +2815,54 @@ public final class ConsensusModule implements AutoCloseable
         }
 
         /**
+         * Set a threshold for the consensus module agent work cycle time which when exceed it will increment the
+         * counter.
+         *
+         * @param thresholdNs value in nanoseconds
+         * @return this for fluent API.
+         * @see Configuration#CYCLE_THRESHOLD_PROP_NAME
+         * @see Configuration#CYCLE_THRESHOLD_DEFAULT_NS
+         */
+        public Context cycleThresholdNs(final long thresholdNs)
+        {
+            this.cycleThresholdNs = thresholdNs;
+            return this;
+        }
+
+        /**
+         * Threshold for the consensus module agent work cycle time which when exceed it will increment the
+         * counter.
+         *
+         * @return threshold to track for the consensus module agent work cycle time.
+         */
+        public long cycleThresholdNs()
+        {
+            return cycleThresholdNs;
+        }
+
+        /**
+         * Set a duty cycle tracker to be used for tracking the duty cycle time of the consensus module agent.
+         *
+         * @param dutyCycleTracker to use for tracking.
+         * @return this for fluent API.
+         */
+        public Context dutyCycleTracker(final DutyCycleTracker dutyCycleTracker)
+        {
+            this.dutyCycleTracker = dutyCycleTracker;
+            return this;
+        }
+
+        /**
+         * The duty cycle tracker used to track the consensus module agent duty cycle.
+         *
+         * @return the duty cycle tracker.
+         */
+        public DutyCycleTracker dutyCycleTracker()
+        {
+            return dutyCycleTracker;
+        }
+
+        /**
          * Get the {@link Agent#roleName()} to be used for the consensus module agent. If {@code null} then one will
          * be generated.
          *
@@ -3047,10 +3237,17 @@ public final class ConsensusModule implements AutoCloseable
          * <p>
          * This client will be closed when the {@link ConsensusModule#close()} or {@link #close()} methods are called
          * if {@link #ownsAeronClient()} is true.
+         * <p>
+         * The method is mostly here in order to test with a custom Aeron instance. The recommended approach is to set
+         * the aeronDirectoryName and allow the ConsensusModule to construct the Aeron client. The supplied Aeron
+         * client must be set to {@code Aeron.Context.useConductorInvoker(true)} to work correctly with the
+         * ConsensusModule.
          *
          * @param aeron client for communicating with the local Media Driver.
          * @return this for a fluent API.
-         * @see Aeron#connect()
+         * @see io.aeron.Aeron#connect()
+         * @see io.aeron.Aeron.Context#useConductorAgentInvoker(boolean)
+         * @see #aeronDirectoryName(String)
          */
         public Context aeron(final Aeron aeron)
         {
@@ -3182,6 +3379,30 @@ public final class ConsensusModule implements AutoCloseable
         {
             this.authorisationServiceSupplier = authorisationServiceSupplier;
             return this;
+        }
+
+        /**
+         * Should an {@link AgentInvoker} be used for running the {@link ConsensusModule} rather than run it on
+         * a thread with a {@link AgentRunner}.
+         *
+         * @param useAgentInvoker use {@link AgentInvoker} be used for running the {@link ConsensusModule}?
+         * @return this for a fluent API.
+         */
+        public ConsensusModule.Context useAgentInvoker(final boolean useAgentInvoker)
+        {
+            this.useAgentInvoker = useAgentInvoker;
+            return this;
+        }
+
+        /**
+         * Should an {@link AgentInvoker} be used for running the {@link ConsensusModule} rather than run it on
+         * a thread with a {@link AgentRunner}.
+         *
+         * @return true if the {@link ConsensusModule} will be run with an {@link AgentInvoker} otherwise false.
+         */
+        public boolean useAgentInvoker()
+        {
+            return useAgentInvoker;
         }
 
         /**
@@ -3336,7 +3557,6 @@ public final class ConsensusModule implements AutoCloseable
          * Supplier of the {@link TimerService} instances.
          *
          * @return supplier of dynamically created {@link TimerService} instances.
-         * @see io.aeron.driver.Configuration#CONGESTION_CONTROL_STRATEGY_SUPPLIER_PROP_NAME
          */
         public TimerServiceSupplier timerServiceSupplier()
         {
@@ -3412,14 +3632,33 @@ public final class ConsensusModule implements AutoCloseable
             return isLogMdc;
         }
 
+        /**
+         * Start up the consensus module using presupplied state skipping the recovery process.  Internal use only.
+         *
+         * @param bootstrapState to initialize the consensus module.
+         * @return this for a fluent API.
+         */
+        ConsensusModule.Context bootstrapState(final ConsensusModuleStateExport bootstrapState)
+        {
+            this.boostrapState = bootstrapState;
+            return this;
+        }
+
+        ConsensusModuleStateExport boostrapState()
+        {
+            return boostrapState;
+        }
+
         private void concludeMarkFile()
         {
+            final String aeronDirectory = aeron.context().aeronDirectoryName();
+            final String authenticatorClassName = authenticatorSupplier.getClass().getName();
             ClusterMarkFile.checkHeaderLength(
-                aeron.context().aeronDirectoryName(),
+                aeronDirectory,
                 controlChannel(),
                 ingressChannel,
                 null,
-                authenticatorSupplier.getClass().toString());
+                authenticatorClassName);
 
             markFile.encoder()
                 .archiveStreamId(archiveContext.controlRequestStreamId())
@@ -3429,11 +3668,11 @@ public final class ConsensusModule implements AutoCloseable
                 .memberId(clusterMemberId)
                 .serviceId(SERVICE_ID)
                 .clusterId(clusterId)
-                .aeronDirectory(aeron.context().aeronDirectoryName())
+                .aeronDirectory(aeronDirectory)
                 .controlChannel(controlChannel)
                 .ingressChannel(ingressChannel)
-                .serviceName("")
-                .authenticator(authenticatorSupplier.getClass().toString());
+                .serviceName(null)
+                .authenticator(authenticatorClassName);
 
             markFile.updateActivityTimestamp(epochClock.time());
             markFile.signalReady();
@@ -3553,6 +3792,8 @@ public final class ConsensusModule implements AutoCloseable
                 "\n    logPublisher=" + logPublisher +
                 "\n    egressPublisher=" + egressPublisher +
                 "\n    isLogMdc=" + isLogMdc +
+                "\n    cycleThresholdNs=" + cycleThresholdNs +
+                "\n    dutyCyleTracker=" + dutyCycleTracker +
                 "\n}";
         }
     }

@@ -27,6 +27,8 @@ import io.aeron.security.SessionProxy;
 import io.aeron.test.InterruptAfter;
 import io.aeron.test.InterruptingTestCallback;
 import io.aeron.test.SystemTestWatcher;
+import io.aeron.test.TestContexts;
+import io.aeron.test.Tests;
 import io.aeron.test.driver.TestMediaDriver;
 import org.agrona.CloseHelper;
 import org.agrona.SystemUtil;
@@ -48,7 +50,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.spy;
 
 @ExtendWith(InterruptingTestCallback.class)
-public class ArchiveAuthenticationTest
+class ArchiveAuthenticationTest
 {
     private static final int RECORDED_STREAM_ID = 1033;
     private static final String RECORDED_CHANNEL = new ChannelUriStringBuilder()
@@ -72,7 +74,7 @@ public class ArchiveAuthenticationTest
     private final String aeronDirectoryName = CommonContext.generateRandomDirName();
 
     @RegisterExtension
-    public final SystemTestWatcher systemTestWatcher = new SystemTestWatcher();
+    final SystemTestWatcher systemTestWatcher = new SystemTestWatcher();
 
     @BeforeEach
     void setUp()
@@ -80,14 +82,14 @@ public class ArchiveAuthenticationTest
     }
 
     @AfterEach
-    public void after()
+    void after()
     {
         CloseHelper.closeAll(aeronArchive, aeron, archive, driver);
     }
 
     @Test
     @InterruptAfter(10)
-    public void shouldBeAbleToRecordWithDefaultCredentialsAndAuthenticator()
+    void shouldBeAbleToRecordWithDefaultCredentialsAndAuthenticator()
     {
         launchArchivingMediaDriver(null);
         connectClient(null);
@@ -97,7 +99,7 @@ public class ArchiveAuthenticationTest
 
     @Test
     @InterruptAfter(10)
-    public void shouldBeAbleToRecordWithAuthenticateOnConnectRequestWithCredentials()
+    void shouldBeAbleToRecordWithAuthenticateOnConnectRequestWithCredentials()
     {
         final MutableLong authenticatorSessionId = new MutableLong(-1L);
 
@@ -150,7 +152,7 @@ public class ArchiveAuthenticationTest
 
     @Test
     @InterruptAfter(10)
-    public void shouldBeAbleToRecordWithAuthenticateOnChallengeResponse()
+    void shouldBeAbleToRecordWithAuthenticateOnChallengeResponse()
     {
         final MutableLong authenticatorSessionId = new MutableLong(-1L);
 
@@ -211,7 +213,7 @@ public class ArchiveAuthenticationTest
 
     @Test
     @InterruptAfter(10)
-    public void shouldNotBeAbleToConnectWithRejectOnConnectRequest()
+    void shouldNotBeAbleToConnectWithRejectOnConnectRequest()
     {
         final MutableLong authenticatorSessionId = new MutableLong(-1L);
 
@@ -271,7 +273,7 @@ public class ArchiveAuthenticationTest
 
     @Test
     @InterruptAfter(10)
-    public void shouldNotBeAbleToConnectWithRejectOnChallengeResponse()
+    void shouldNotBeAbleToConnectWithRejectOnChallengeResponse()
     {
         final MutableLong authenticatorSessionId = new MutableLong(-1L);
 
@@ -344,7 +346,7 @@ public class ArchiveAuthenticationTest
                 .aeronDirectoryName(aeronDirectoryName));
 
         aeronArchive = AeronArchive.connect(
-            new AeronArchive.Context()
+            TestContexts.localhostAeronArchive()
                 .credentialsSupplier(credentialsSupplier)
                 .aeron(aeron));
     }
@@ -358,7 +360,7 @@ public class ArchiveAuthenticationTest
             .spiesSimulateConnection(false)
             .dirDeleteOnStart(true);
 
-        final Archive.Context archiveCtx = new Archive.Context()
+        final Archive.Context archiveCtx = TestContexts.localhostArchive()
             .catalogCapacity(CATALOG_CAPACITY)
             .aeronDirectoryName(aeronDirectoryName)
             .deleteArchiveOnStart(true)
@@ -379,7 +381,6 @@ public class ArchiveAuthenticationTest
         }
     }
 
-
     private void createRecording()
     {
         final String messagePrefix = "Message-Prefix-";
@@ -391,13 +392,13 @@ public class ArchiveAuthenticationTest
             Publication publication = aeron.addPublication(RECORDED_CHANNEL, RECORDED_STREAM_ID))
         {
             final CountersReader counters = aeron.countersReader();
-            final int counterId = ArchiveSystemTests.awaitRecordingCounterId(counters, publication.sessionId());
+            final int counterId = Tests.awaitRecordingCounterId(counters, publication.sessionId());
 
             offer(publication, messageCount, messagePrefix);
             consume(subscription, messageCount, messagePrefix);
 
             final long currentPosition = publication.position();
-            awaitPosition(counters, counterId, currentPosition);
+            Tests.awaitPosition(counters, counterId, currentPosition);
         }
 
         aeronArchive.stopRecording(subscriptionId);

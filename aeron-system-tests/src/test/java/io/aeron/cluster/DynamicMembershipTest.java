@@ -15,16 +15,14 @@
  */
 package io.aeron.cluster;
 
-import io.aeron.log.EventLogExtension;
+import io.aeron.test.EventLogExtension;
 import io.aeron.test.InterruptAfter;
 import io.aeron.test.InterruptingTestCallback;
 import io.aeron.test.SlowTest;
 import io.aeron.test.SystemTestWatcher;
 import io.aeron.test.cluster.TestCluster;
 import io.aeron.test.cluster.TestNode;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
@@ -36,23 +34,16 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @SlowTest
 @ExtendWith({ EventLogExtension.class, InterruptingTestCallback.class })
-public class DynamicMembershipTest
+class DynamicMembershipTest
 {
     private TestCluster cluster = null;
 
     @RegisterExtension
     final SystemTestWatcher systemTestWatcher = new SystemTestWatcher();
 
-    @BeforeEach
-    void setUp()
-    {
-        systemTestWatcher.ignoreErrorsMatching(
-            (s) -> s.contains("ats_gcm_decrypt final_ex: error:00000000:lib(0):func(0):reason(0)"));
-    }
-
     @Test
     @InterruptAfter(30)
-    public void shouldQueryClusterMembers(final TestInfo testInfo)
+    void shouldQueryClusterMembers()
     {
         cluster = aCluster().withStaticNodes(3).start();
         systemTestWatcher.cluster(cluster);
@@ -67,7 +58,7 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldDynamicallyJoinClusterOfThreeNoSnapshots(final TestInfo testInfo)
+    void shouldDynamicallyJoinClusterOfThreeNoSnapshots()
     {
         cluster = aCluster().withStaticNodes(3).withDynamicNodes(1).start();
         systemTestWatcher.cluster(cluster);
@@ -86,7 +77,7 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldDynamicallyJoinClusterOfThreeNoSnapshotsThenSend(final TestInfo testInfo)
+    void shouldDynamicallyJoinClusterOfThreeNoSnapshotsThenSend()
     {
         cluster = aCluster().withStaticNodes(3).withDynamicNodes(1).start();
         systemTestWatcher.cluster(cluster);
@@ -107,7 +98,7 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldDynamicallyJoinClusterOfThreeNoSnapshotsWithCatchup(final TestInfo testInfo)
+    void shouldDynamicallyJoinClusterOfThreeNoSnapshotsWithCatchup()
     {
         cluster = aCluster().withStaticNodes(3).withDynamicNodes(1).start();
         systemTestWatcher.cluster(cluster);
@@ -127,7 +118,7 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldDynamicallyJoinClusterOfThreeWithEmptySnapshot(final TestInfo testInfo)
+    void shouldDynamicallyJoinClusterOfThreeWithEmptySnapshot()
     {
         cluster = aCluster().withStaticNodes(3).withDynamicNodes(1).start();
         systemTestWatcher.cluster(cluster);
@@ -147,7 +138,7 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldDynamicallyJoinClusterOfThreeWithSnapshot(final TestInfo testInfo)
+    void shouldDynamicallyJoinClusterOfThreeWithSnapshot()
     {
         cluster = aCluster().withStaticNodes(3).withDynamicNodes(1).start();
         systemTestWatcher.cluster(cluster);
@@ -173,7 +164,7 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldDynamicallyJoinClusterOfThreeWithSnapshotThenSend(final TestInfo testInfo)
+    void shouldDynamicallyJoinClusterOfThreeWithSnapshotThenSend()
     {
         cluster = aCluster().withStaticNodes(3).withDynamicNodes(1).start();
         systemTestWatcher.cluster(cluster);
@@ -207,7 +198,7 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(15)
-    public void shouldRemoveFollower(final TestInfo testInfo)
+    void shouldRemoveFollower()
     {
         cluster = aCluster().withStaticNodes(3).start();
         systemTestWatcher.cluster(cluster);
@@ -234,7 +225,7 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldRemoveLeader(final TestInfo testInfo)
+    void shouldRemoveLeader()
     {
         cluster = aCluster().withStaticNodes(3).start();
         systemTestWatcher.cluster(cluster);
@@ -256,7 +247,7 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldRemoveLeaderAfterDynamicNodeJoined(final TestInfo testInfo)
+    void shouldRemoveLeaderAfterDynamicNodeJoined()
     {
         cluster = aCluster().withStaticNodes(3).withDynamicNodes(1).start();
         systemTestWatcher.cluster(cluster);
@@ -282,7 +273,7 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldRemoveLeaderAfterDynamicNodeJoinedThenRestartCluster(final TestInfo testInfo)
+    void shouldRemoveLeaderAfterDynamicNodeJoinedThenRestartCluster()
     {
         cluster = aCluster().withStaticNodes(3).withDynamicNodes(1).start();
         systemTestWatcher.cluster(cluster);
@@ -323,7 +314,7 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldJoinDynamicNodeToSingleStaticLeader(final TestInfo testInfo)
+    void shouldJoinDynamicNodeToSingleStaticLeader()
     {
         cluster = aCluster().withStaticNodes(1).withDynamicNodes(1).start();
         systemTestWatcher.cluster(cluster);
@@ -337,7 +328,7 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldDynamicallyJoinClusterOfThreeNoSnapshotsAndRestartDynamicNode(final TestInfo testInfo)
+    void shouldDynamicallyJoinClusterOfThreeNoSnapshotsAndRestartDynamicNode()
     {
         cluster = aCluster().withStaticNodes(3).withDynamicNodes(1).start();
         systemTestWatcher.cluster(cluster);
@@ -368,7 +359,7 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(60)
-    public void shouldDynamicallyJoinClusterOfThreeNoSnapshotsWithLogReplicationAndCatchup()
+    void shouldDynamicallyJoinClusterOfThreeNoSnapshotsWithLogReplicationAndCatchup()
     {
         final int messageCount = 10;
         cluster = aCluster().withStaticNodes(3).withDynamicNodes(1).start();
@@ -386,7 +377,7 @@ public class DynamicMembershipTest
         cluster.stopNode(leader0);
         final TestNode leader1 = cluster.awaitLeader();
         cluster.startStaticNode(leader0.index(), false);
-        TestCluster.awaitElectionClosed(cluster.node(leader0.index()));
+        awaitElectionClosed(cluster.node(leader0.index()));
 
         cluster.reconnectClient();
         cluster.sendMessages(messageCount);
@@ -396,7 +387,7 @@ public class DynamicMembershipTest
         cluster.stopNode(leader1);
         final TestNode leader2 = cluster.awaitLeader();
         cluster.startStaticNode(leader1.index(), false);
-        TestCluster.awaitElectionClosed(cluster.node(leader1.index()));
+        awaitElectionClosed(cluster.node(leader1.index()));
 
         cluster.reconnectClient();
         cluster.sendMessages(messageCount);
@@ -409,12 +400,10 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(60)
-    public void shouldDynamicallyJoinClusterOfThreeWithSnapshotWithDynamicLeader(final TestInfo testInfo)
+    void shouldDynamicallyJoinClusterOfThreeWithSnapshotWithDynamicLeader()
     {
         cluster = aCluster().withStaticNodes(3).withDynamicNodes(3).start();
         systemTestWatcher.cluster(cluster);
-        systemTestWatcher.showAllErrors();
-        systemTestWatcher.ignoreErrorsMatching((s) -> s.contains("expected termination"));
 
         final TestNode staticLeader = cluster.awaitLeader();
         final List<TestNode> staticFollowers = cluster.followers();
@@ -446,6 +435,7 @@ public class DynamicMembershipTest
         assertEquals(messageCount, dynamicMemberA.service().messageCount());
 
         awaitMembershipSize(staticLeader, 3);
+        awaitActiveMember(dynamicMemberA);
 
         staticFollowerB.isTerminationExpected(true);
         staticLeader.removeMember(staticFollowerB.index(), false);
@@ -464,6 +454,7 @@ public class DynamicMembershipTest
         assertEquals(messageCount, dynamicMemberB.service().messageCount());
 
         awaitMembershipSize(staticLeader, 3);
+        awaitActiveMember(dynamicMemberB);
 
         final int initialLeaderIndex = staticLeader.index();
         staticLeader.isTerminationExpected(true);
@@ -487,17 +478,17 @@ public class DynamicMembershipTest
         awaitMembershipSize(newLeader, 3);
 
         awaitElectionClosed(dynamicMemberC);
+        awaitActiveMember(dynamicMemberC);
         assertEquals(FOLLOWER, dynamicMemberC.role());
     }
 
     @Test
-    @InterruptAfter(10)
-    public void shouldDynamicallyJoinMemberAfterRecyclingAllStaticNodes(final TestInfo testInfo)
+    @InterruptAfter(30)
+    @SuppressWarnings("checkstyle:methodlength")
+    void shouldDynamicallyJoinMemberAfterRecyclingAllStaticNodes()
     {
         cluster = aCluster().withStaticNodes(3).withDynamicNodes(4).start();
         systemTestWatcher.cluster(cluster);
-        systemTestWatcher.showAllErrors();
-        systemTestWatcher.ignoreErrorsMatching((s) -> s.contains("expected termination"));
 
         final TestNode staticLeader = cluster.awaitLeader();
         final List<TestNode> staticFollowers = cluster.followers();
@@ -529,6 +520,7 @@ public class DynamicMembershipTest
         assertEquals(messageCount, dynamicMemberA.service().messageCount());
 
         awaitMembershipSize(staticLeader, 3);
+        awaitActiveMember(dynamicMemberA);
 
         staticFollowerB.isTerminationExpected(true);
         staticLeader.removeMember(staticFollowerB.index(), false);
@@ -547,6 +539,7 @@ public class DynamicMembershipTest
         assertEquals(messageCount, dynamicMemberB.service().messageCount());
 
         awaitMembershipSize(staticLeader, 3);
+        awaitActiveMember(dynamicMemberB);
 
         final int initialLeaderIndex = staticLeader.index();
         staticLeader.isTerminationExpected(true);
@@ -568,6 +561,7 @@ public class DynamicMembershipTest
         assertEquals(messageCount, dynamicMemberC.service().messageCount());
 
         awaitMembershipSize(newLeader, 3);
+        awaitActiveMember(dynamicMemberC);
 
         final long snapshotCount = cluster.getSnapshotCount(newLeader);
         cluster.takeSnapshot(newLeader);
@@ -590,11 +584,12 @@ public class DynamicMembershipTest
         cluster.awaitSnapshotLoadedForService(dynamicMemberD);
         assertEquals(messageCount, dynamicMemberD.service().messageCount());
         awaitMembershipSize(newLeader, 3);
+        awaitActiveMember(dynamicMemberD);
     }
 
     @Test
     @InterruptAfter(30)
-    public void shouldDynamicallyJoinMemberAfterSnapshotOnNonZeroTerm(final TestInfo testInfo)
+    void shouldDynamicallyJoinMemberAfterSnapshotOnNonZeroTerm()
     {
         cluster = aCluster().withStaticNodes(3).withDynamicNodes(1).start();
         systemTestWatcher.cluster(cluster);
@@ -628,7 +623,7 @@ public class DynamicMembershipTest
 
     @Test
     @InterruptAfter(60)
-    public void shouldDynamicallyJoinMemberAfterSnapshotOnNonZeroTermAndSubsequentLeadershipTerms()
+    void shouldDynamicallyJoinMemberAfterSnapshotOnNonZeroTermAndSubsequentLeadershipTerms()
     {
         cluster = aCluster().withStaticNodes(3).withDynamicNodes(1).start();
         systemTestWatcher.cluster(cluster);
@@ -643,8 +638,7 @@ public class DynamicMembershipTest
 
         cluster.stopNode(leader0);
         final TestNode leader1 = cluster.awaitLeader();
-        cluster.startStaticNode(leader0.index(), false);
-        TestCluster.awaitElectionClosed(leader0);
+        awaitElectionClosed(cluster.startStaticNode(leader0.index(), false));
 
         cluster.takeSnapshot(leader1);
         cluster.awaitSnapshotCount(1);
@@ -656,8 +650,7 @@ public class DynamicMembershipTest
 
         cluster.stopNode(leader1);
         final TestNode leader2 = cluster.awaitLeader();
-        cluster.startStaticNode(leader1.index(), false);
-        TestCluster.awaitElectionClosed(leader1);
+        awaitElectionClosed(cluster.startStaticNode(leader1.index(), false));
 
         cluster.reconnectClient();
         cluster.sendMessages(messageCount);

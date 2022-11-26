@@ -17,9 +17,12 @@ package io.aeron.cluster.service;
 
 import io.aeron.*;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.cluster.AppVersionValidator;
 import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.codecs.mark.ClusterComponentType;
 import io.aeron.cluster.codecs.mark.MarkFileHeaderEncoder;
+import io.aeron.driver.DutyCycleTracker;
+import io.aeron.driver.status.DutyCycleStallTracker;
 import io.aeron.exceptions.ConcurrentConcludeException;
 import io.aeron.exceptions.ConfigurationException;
 import org.agrona.*;
@@ -35,11 +38,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.Supplier;
 
-import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.CLUSTERED_SERVICE_ERROR_COUNT_TYPE_ID;
+import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.*;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.util.concurrent.atomic.AtomicIntegerFieldUpdater.newUpdater;
-import static org.agrona.SystemUtil.getSizeAsInt;
-import static org.agrona.SystemUtil.loadPropertiesFiles;
+import static org.agrona.SystemUtil.*;
 
 /**
  * Container for a service in the cluster managed by the Consensus Module. This is where business logic resides and
@@ -144,9 +146,14 @@ public final class ClusteredServiceContainer implements AutoCloseable
         public static final long SNAPSHOT_TYPE_ID = 2;
 
         /**
-         * Update interval for cluster mark file.
+         * Update interval for cluster mark file in nanoseconds.
          */
         public static final long MARK_FILE_UPDATE_INTERVAL_NS = TimeUnit.SECONDS.toNanos(1);
+
+        /**
+         * Timeout in milliseconds to detect liveness.
+         */
+        public static final long LIVENESS_TIMEOUT_MS = 10 * TimeUnit.NANOSECONDS.toMillis(MARK_FILE_UPDATE_INTERVAL_NS);
 
         /**
          * Property name for the identity of the cluster instance.
@@ -300,6 +307,17 @@ public final class ClusteredServiceContainer implements AutoCloseable
          */
         public static final String DELEGATING_ERROR_HANDLER_PROP_NAME =
             "aeron.cluster.service.delegating.error.handler";
+
+        /**
+         * Property name for threshold value for the container work cycle threshold to track
+         * for being exceeded.
+         */
+        public static final String CYCLE_THRESHOLD_PROP_NAME = "aeron.cluster.service.cycle.threshold";
+
+        /**
+         * Default threshold value for the container work cycle threshold to track for being exceeded.
+         */
+        public static final long CYCLE_THRESHOLD_DEFAULT_NS = TimeUnit.MILLISECONDS.toNanos(1000);
 
         /**
          * Counter type id for the cluster node role.
@@ -501,6 +519,16 @@ public final class ClusteredServiceContainer implements AutoCloseable
         }
 
         /**
+         * Get threshold value for the container work cycle threshold to track for being exceeded.
+         *
+         * @return threshold value in nanoseconds.
+         */
+        public static long cycleThresholdNs()
+        {
+            return getDurationInNanos(CYCLE_THRESHOLD_PROP_NAME, CYCLE_THRESHOLD_DEFAULT_NS);
+        }
+
+        /**
          * Create a new {@link ClusteredService} based on the configured {@link #SERVICE_CLASS_NAME_PROP_NAME}.
          *
          * @return a new {@link ClusteredService} based on the configured {@link #SERVICE_CLASS_NAME_PROP_NAME}.
@@ -576,11 +604,13 @@ public final class ClusteredServiceContainer implements AutoCloseable
         private int errorBufferLength = Configuration.errorBufferLength();
         private boolean isRespondingService = Configuration.isRespondingService();
         private int logFragmentLimit = Configuration.logFragmentLimit();
+        private long cycleThresholdNs = Configuration.cycleThresholdNs();
 
         private CountDownLatch abortLatch;
         private ThreadFactory threadFactory;
         private Supplier<IdleStrategy> idleStrategySupplier;
         private EpochClock epochClock;
+        private NanoClock nanoClock;
         private DistinctErrorLog errorLog;
         private ErrorHandler errorHandler;
         private DelegatingErrorHandler delegatingErrorHandler;
@@ -591,6 +621,8 @@ public final class ClusteredServiceContainer implements AutoCloseable
         private File clusterDir;
         private String aeronDirectoryName = CommonContext.getAeronDirectoryName();
         private Aeron aeron;
+        private DutyCycleTracker dutyCycleTracker;
+        private AppVersionValidator appVersionValidator;
         private boolean ownsAeronClient;
 
         private ClusteredService clusteredService;
@@ -641,9 +673,19 @@ public final class ClusteredServiceContainer implements AutoCloseable
                 idleStrategySupplier = Configuration.idleStrategySupplier(null);
             }
 
+            if (null == appVersionValidator)
+            {
+                appVersionValidator = AppVersionValidator.SEMANTIC_VERSIONING_VALIDATOR;
+            }
+
             if (null == epochClock)
             {
                 epochClock = SystemEpochClock.INSTANCE;
+            }
+
+            if (null == nanoClock)
+            {
+                nanoClock = SystemNanoClock.INSTANCE;
             }
 
             if (null == clusterDir)
@@ -661,7 +703,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
             {
                 markFile = new ClusterMarkFile(
                     new File(clusterDir, ClusterMarkFile.markFilenameForService(serviceId)),
-                    ClusterComponentType.CONTAINER, errorBufferLength, epochClock, 0);
+                    ClusterComponentType.CONTAINER, errorBufferLength, epochClock, LIVENESS_TIMEOUT_MS);
             }
 
             if (null == errorLog)
@@ -717,6 +759,18 @@ public final class ClusteredServiceContainer implements AutoCloseable
                 {
                     aeron.context().errorHandler(countedErrorHandler);
                 }
+            }
+
+            if (null == dutyCycleTracker)
+            {
+                dutyCycleTracker = new DutyCycleStallTracker(
+                    aeron.addCounter(AeronCounters.CLUSTER_CLUSTERED_SERVICE_MAX_CYCLE_TIME_TYPE_ID,
+                        "Cluster container max cycle time in ns - clusterId=" + clusterId +
+                        " serviceId=" + serviceId),
+                    aeron.addCounter(AeronCounters.CLUSTER_CLUSTERED_SERVICE_CYCLE_TIME_THRESHOLD_EXCEEDED_TYPE_ID,
+                        "Cluster container work cycle time exceeded count: threshold=" + cycleThresholdNs +
+                        "ns - clusterId=" + clusterId + " serviceId=" + serviceId),
+                    cycleThresholdNs);
             }
 
             if (null == archiveContext)
@@ -788,6 +842,32 @@ public final class ClusteredServiceContainer implements AutoCloseable
         public int appVersion()
         {
             return appVersion;
+        }
+
+        /**
+         * User assigned application version validator implementation used to check version compatibility.
+         * <p>
+         * The default validator uses {@link org.agrona.SemanticVersion} semantics.
+         *
+         * @param appVersionValidator for user application.
+         * @return this for fluent API.
+         */
+        public Context appVersionValidator(final AppVersionValidator appVersionValidator)
+        {
+            this.appVersionValidator = appVersionValidator;
+            return this;
+        }
+
+        /**
+         * User assigned application version validator implementation used to check version compatibility.
+         * <p>
+         * The default is to use {@link org.agrona.SemanticVersion} major version for checking compatibility.
+         *
+         * @return AppVersionValidator in use.
+         */
+        public AppVersionValidator appVersionValidator()
+        {
+            return appVersionValidator;
         }
 
         /**
@@ -1509,6 +1589,76 @@ public final class ClusteredServiceContainer implements AutoCloseable
         }
 
         /**
+         * The {@link NanoClock} as a source of time in nanoseconds for measuring duration.
+         *
+         * @return the {@link NanoClock} as a source of time in nanoseconds for measuring duration.
+         */
+        public NanoClock nanoClock()
+        {
+            return nanoClock;
+        }
+
+        /**
+         * The {@link NanoClock} as a source of time in nanoseconds for measuring duration.
+         *
+         * @param clock to be used.
+         * @return this for a fluent API.
+         */
+        public Context nanoClock(final NanoClock clock)
+        {
+            nanoClock = clock;
+            return this;
+        }
+
+        /**
+         * Set a threshold for the container work cycle time which when exceed it will increment the
+         * counter.
+         *
+         * @param thresholdNs value in nanoseconds
+         * @return this for fluent API.
+         * @see Configuration#CYCLE_THRESHOLD_PROP_NAME
+         * @see Configuration#CYCLE_THRESHOLD_DEFAULT_NS
+         */
+        public Context cycleThresholdNs(final long thresholdNs)
+        {
+            this.cycleThresholdNs = thresholdNs;
+            return this;
+        }
+
+        /**
+         * Threshold for the container work cycle time which when exceed it will increment the
+         * counter.
+         *
+         * @return threshold to track for the container work cycle time.
+         */
+        public long cycleThresholdNs()
+        {
+            return cycleThresholdNs;
+        }
+
+        /**
+         * Set a duty cycle tracker to be used for tracking the duty cycle time of the container.
+         *
+         * @param dutyCycleTracker to use for tracking.
+         * @return this for fluent API.
+         */
+        public Context dutyCycleTracker(final DutyCycleTracker dutyCycleTracker)
+        {
+            this.dutyCycleTracker = dutyCycleTracker;
+            return this;
+        }
+
+        /**
+         * The duty cycle tracker used to track the container duty cycle.
+         *
+         * @return the duty cycle tracker.
+         */
+        public DutyCycleTracker dutyCycleTracker()
+        {
+            return dutyCycleTracker;
+        }
+
+        /**
          * Delete the cluster container directory.
          */
         public void deleteDirectory()
@@ -1609,6 +1759,8 @@ public final class ClusteredServiceContainer implements AutoCloseable
                 "\n    clusteredService=" + clusteredService +
                 "\n    shutdownSignalBarrier=" + shutdownSignalBarrier +
                 "\n    terminationHook=" + terminationHook +
+                "\n    cycleThresholdNs=" + cycleThresholdNs +
+                "\n    dutyCyleTracker=" + dutyCycleTracker +
                 "\n    markFile=" + markFile +
                 "\n}";
         }

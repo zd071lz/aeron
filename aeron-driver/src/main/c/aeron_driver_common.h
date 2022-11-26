@@ -42,7 +42,7 @@ aeron_driver_managed_resource_t;
 typedef struct aeron_position_stct
 {
     int32_t counter_id;
-    int64_t *value_addr;
+    volatile int64_t *value_addr;
 }
 aeron_position_t;
 
@@ -61,7 +61,7 @@ typedef struct aeron_tetherable_position_stct
     bool is_tether;
     aeron_subscription_tether_state_t state;
     int32_t counter_id;
-    int64_t *value_addr;
+    volatile int64_t *value_addr;
     int64_t subscription_registration_id;
     int64_t time_of_last_update_ns;
 }
@@ -87,8 +87,8 @@ typedef struct aeron_subscribable_stct
     size_t length;
     size_t capacity;
     aeron_tetherable_position_t *array;
-    void (*add_position_hook_func)(void *clientd, int64_t *value_addr);
-    void (*remove_position_hook_func)(void *clientd, int64_t *value_addr);
+    void (*add_position_hook_func)(void *clientd, volatile int64_t *value_addr);
+    void (*remove_position_hook_func)(void *clientd, volatile int64_t *value_addr);
     void *clientd;
 }
 aeron_subscribable_t;
@@ -127,11 +127,9 @@ struct aeron_feedback_delay_generator_state_stct
 
 void aeron_driver_subscribable_remove_position(aeron_subscribable_t *subscribable, int32_t counter_id);
 
-inline void aeron_driver_subscribable_null_hook(void *clientd, int64_t *value_addr)
+inline void aeron_driver_subscribable_null_hook(void *clientd, volatile int64_t *value_addr)
 {
 }
-
-void aeron_command_on_delete_cmd(void *clientd, void *cmd);
 
 typedef void (*aeron_on_remove_publication_cleanup_func_t)(
     int32_t session_id,

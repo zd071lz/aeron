@@ -98,14 +98,12 @@ SET(HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/concurrent/logbuffer/FrameDescriptor.h
     ${CMAKE_CURRENT_SOURCE_DIR}/concurrent/logbuffer/Header.h
     ${CMAKE_CURRENT_SOURCE_DIR}/concurrent/logbuffer/HeaderWriter.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/concurrent/logbuffer/TermAppender.h
     ${CMAKE_CURRENT_SOURCE_DIR}/concurrent/logbuffer/LogBufferDescriptor.h
     ${CMAKE_CURRENT_SOURCE_DIR}/concurrent/logbuffer/TermRebuilder.h
     ${CMAKE_CURRENT_SOURCE_DIR}/concurrent/logbuffer/TermGapScanner.h
     ${CMAKE_CURRENT_SOURCE_DIR}/concurrent/logbuffer/TermBlockScanner.h
     ${CMAKE_CURRENT_SOURCE_DIR}/concurrent/logbuffer/TermReader.h
     ${CMAKE_CURRENT_SOURCE_DIR}/concurrent/logbuffer/TermScanner.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/concurrent/logbuffer/ExclusiveTermAppender.h
     ${CMAKE_CURRENT_SOURCE_DIR}/concurrent/ringbuffer/ManyToOneRingBuffer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/concurrent/ringbuffer/RecordDescriptor.h
     ${CMAKE_CURRENT_SOURCE_DIR}/concurrent/ringbuffer/RingBufferDescriptor.h

@@ -60,6 +60,7 @@ public final class AeronCluster implements AutoCloseable
     private boolean isClosed;
     private final Context ctx;
     private final Subscription subscription;
+    private Image egressImage;
     private Publication publication;
     private final IdleStrategy idleStrategy;
     private final BufferClaim bufferClaim = new BufferClaim();
@@ -205,6 +206,7 @@ public final class AeronCluster implements AutoCloseable
         final MessageHeaderEncoder messageHeaderEncoder,
         final Publication publication,
         final Subscription subscription,
+        final Image egressImage,
         final Int2ObjectHashMap<MemberIngress> endpointByIdMap,
         final long clusterSessionId,
         final long leadershipTermId,
@@ -213,6 +215,7 @@ public final class AeronCluster implements AutoCloseable
         this.ctx = ctx;
         this.messageHeaderEncoder = messageHeaderEncoder;
         this.subscription = subscription;
+        this.egressImage = egressImage;
         this.endpointByIdMap = endpointByIdMap;
         this.clusterSessionId = clusterSessionId;
         this.leadershipTermId = leadershipTermId;
@@ -435,11 +438,6 @@ public final class AeronCluster implements AutoCloseable
                 return true;
             }
 
-            if (result == Publication.CLOSED)
-            {
-                throw new ClusterException("ingress publication is closed");
-            }
-
             if (result == Publication.MAX_POSITION_EXCEEDED)
             {
                 throw new ClusterException("max position exceeded");
@@ -517,15 +515,23 @@ public final class AeronCluster implements AutoCloseable
 
     /**
      * Poll the {@link #egressSubscription()} for session messages which are dispatched to
-     * {@link Context#egressListener()}.
+     * {@link Context#egressListener()}. Invoking this method, or {@link #controlledPollEgress()}, frequently is
+     * important for detecting leadership changes in a cluster.
      * <p>
      * <b>Note:</b> if {@link Context#egressListener()} is not set then a {@link ConfigurationException} could result.
      *
      * @return the number of fragments processed.
+     * @see #controlledPollEgress()
      */
     public int pollEgress()
     {
         final int fragments = subscription.poll(fragmentAssembler, FRAGMENT_LIMIT);
+
+        if (egressImage.isClosed())
+        {
+            publication.close();
+        }
+
         if (isClosed)
         {
             close();
@@ -536,16 +542,24 @@ public final class AeronCluster implements AutoCloseable
 
     /**
      * Poll the {@link #egressSubscription()} for session messages which are dispatched to
-     * {@link Context#controlledEgressListener()}.
+     * {@link Context#controlledEgressListener()}. Invoking this method, or {@link #pollEgress()}, frequently is
+     * important for detecting leadership changes in a cluster.
      * <p>
      * <b>Note:</b> if {@link Context#controlledEgressListener()} is not set then a {@link ConfigurationException}
      * could result.
      *
      * @return the number of fragments processed.
+     * @see #pollEgress()
      */
     public int controlledPollEgress()
     {
         final int fragments = subscription.controlledPoll(controlledFragmentAssembler, FRAGMENT_LIMIT);
+
+        if (egressImage.isClosed())
+        {
+            publication.close();
+        }
+
         if (isClosed)
         {
             close();
@@ -572,18 +586,22 @@ public final class AeronCluster implements AutoCloseable
         if (clusterSessionId != this.clusterSessionId)
         {
             throw new ClusterException(
-                "invalid clusterSessionId=" + clusterSessionId + " expected " + this.clusterSessionId);
+                "invalid clusterSessionId=" + clusterSessionId + " expected=" + this.clusterSessionId);
         }
 
         this.leadershipTermId = leadershipTermId;
         this.leaderMemberId = leaderMemberId;
         sessionMessageHeaderEncoder.leadershipTermId(leadershipTermId);
 
+        CloseHelper.close(publication);
         if (ctx.ingressEndpoints() != null)
         {
-            CloseHelper.close(publication);
             ctx.ingressEndpoints(ingressEndpoints);
             updateMemberEndpoints(ingressEndpoints, leaderMemberId);
+        }
+        else
+        {
+            publication = addIngressPublication(ctx, ctx.ingressChannel(), ctx.ingressStreamId());
         }
 
         fragmentAssembler.clear();
@@ -614,33 +632,33 @@ public final class AeronCluster implements AutoCloseable
         return endpointByIdMap;
     }
 
+    static Publication addIngressPublication(final Context ctx, final String channel, final int streamId)
+    {
+        if (ctx.isIngressExclusive())
+        {
+            return ctx.aeron().addExclusivePublication(channel, streamId);
+        }
+        else
+        {
+            return ctx.aeron().addPublication(channel, streamId);
+        }
+    }
+
     private void updateMemberEndpoints(final String ingressEndpoints, final int leaderMemberId)
     {
-        final Int2ObjectHashMap<MemberIngress> map = parseIngressEndpoints(ingressEndpoints);
-        final MemberIngress existingLeader = endpointByIdMap.get(leaderMemberId);
-        final MemberIngress newLeader = map.get(leaderMemberId);
-
-        if (null != existingLeader && null != existingLeader.publication &&
-            existingLeader.endpoint.equals(newLeader.endpoint))
-        {
-            newLeader.publication = existingLeader.publication;
-            publication = existingLeader.publication;
-            existingLeader.publication = null;
-        }
-
-        if (null == newLeader.publication)
-        {
-            final ChannelUri channelUri = ChannelUri.parse(ctx.ingressChannel());
-            if (channelUri.isUdp())
-            {
-                channelUri.put(CommonContext.ENDPOINT_PARAM_NAME, newLeader.endpoint);
-            }
-
-            publication = addIngressPublication(ctx, channelUri.toString(), ctx.ingressStreamId());
-            newLeader.publication = publication;
-        }
-
         CloseHelper.closeAll(endpointByIdMap.values());
+
+        final Int2ObjectHashMap<MemberIngress> map = parseIngressEndpoints(ingressEndpoints);
+        final MemberIngress newLeader = map.get(leaderMemberId);
+        final ChannelUri channelUri = ChannelUri.parse(ctx.ingressChannel());
+
+        if (channelUri.isUdp())
+        {
+            channelUri.put(CommonContext.ENDPOINT_PARAM_NAME, newLeader.endpoint);
+        }
+
+        publication = addIngressPublication(ctx, channelUri.toString(), ctx.ingressStreamId());
+        newLeader.publication = publication;
         endpointByIdMap = map;
     }
 
@@ -681,6 +699,7 @@ public final class AeronCluster implements AutoCloseable
             final long sessionId = newLeaderEventDecoder.clusterSessionId();
             if (sessionId == clusterSessionId)
             {
+                egressImage = (Image)header.context();
                 onNewLeader(
                     sessionId,
                     newLeaderEventDecoder.leadershipTermId(),
@@ -786,6 +805,7 @@ public final class AeronCluster implements AutoCloseable
             final long sessionId = newLeaderEventDecoder.clusterSessionId();
             if (sessionId == clusterSessionId)
             {
+                egressImage = (Image)header.context();
                 onNewLeader(
                     sessionId,
                     newLeaderEventDecoder.leadershipTermId(),
@@ -901,18 +921,6 @@ public final class AeronCluster implements AutoCloseable
         }
     }
 
-    private static Publication addIngressPublication(final Context ctx, final String channel, final int streamId)
-    {
-        if (ctx.isIngressExclusive())
-        {
-            return ctx.aeron().addExclusivePublication(channel, streamId);
-        }
-        else
-        {
-            return ctx.aeron().addPublication(channel, streamId);
-        }
-    }
-
     /**
      * Configuration options for cluster client.
      */
@@ -920,7 +928,7 @@ public final class AeronCluster implements AutoCloseable
     {
         /**
          * Major version of the network protocol from client to consensus module. If these don't match then client
-         * and archive consensus module are not compatible.
+         * and consensus module are not compatible.
          */
         public static final int PROTOCOL_MAJOR_VERSION = 0;
 
@@ -928,7 +936,7 @@ public final class AeronCluster implements AutoCloseable
          * Minor version of the network protocol from client to consensus module. If these don't match then some
          * features may not be available.
          */
-        public static final int PROTOCOL_MINOR_VERSION = 2;
+        public static final int PROTOCOL_MINOR_VERSION = 3;
 
         /**
          * Patch version of the network protocol from client to consensus module. If these don't match then bug fixes
@@ -955,8 +963,9 @@ public final class AeronCluster implements AutoCloseable
         public static final long MESSAGE_TIMEOUT_DEFAULT_NS = TimeUnit.SECONDS.toNanos(5);
 
         /**
-         * Property name for the comma separated list of cluster ingress endpoints for use with unicast. This is the
-         * endpoint values which get substituted into the {@link #INGRESS_CHANNEL_PROP_NAME} when using UDP unicast.
+         * Property name for the comma separated map of cluster memberId to ingress endpoint for use with unicast. This
+         * is the endpoint values which get substituted into the {@link #INGRESS_CHANNEL_PROP_NAME} when using UDP
+         * unicast.
          * <p>
          * {@code "0=endpoint,1=endpoint,2=endpoint"}
          * <p>
@@ -993,7 +1002,6 @@ public final class AeronCluster implements AutoCloseable
 
         /**
          * Channel for receiving response messages from a cluster.
-         *
          * <p>
          * Channel's <em>endpoint</em> can be specified explicitly (i.e. by providing address and port pair) or
          * by using zero as a port number. Here is an example of valid response channels:
@@ -1662,6 +1670,7 @@ public final class AeronCluster implements AutoCloseable
     public static final class AsyncConnect implements AutoCloseable
     {
         private final Subscription egressSubscription;
+        private Image egressImage;
         private final long deadlineNs;
         private long correlationId = Aeron.NULL_VALUE;
         private long clusterSessionId;
@@ -1771,6 +1780,7 @@ public final class AeronCluster implements AutoCloseable
                 final TimeoutException ex = new TimeoutException(
                     "cluster connect timeout: step=" + step +
                     " ingressChannel=" + ctx.ingressChannel() +
+                    " ingressEndpoints=" + ctx.ingressEndpoints() +
                     " ingressPublication=" + ingressPublication +
                     " egress.isConnected=" + egressSubscription.isConnected() +
                     " responseChannel=" + egressSubscription.tryResolveChannelEndpointPort());
@@ -1901,6 +1911,7 @@ public final class AeronCluster implements AutoCloseable
                         leadershipTermId = egressPoller.leadershipTermId();
                         leaderMemberId = egressPoller.leaderMemberId();
                         clusterSessionId = egressPoller.clusterSessionId();
+                        egressImage = egressPoller.egressImage();
                         step(4);
                         break;
 
@@ -1968,6 +1979,7 @@ public final class AeronCluster implements AutoCloseable
                 messageHeaderEncoder,
                 ingressPublication,
                 egressSubscription,
+                egressImage,
                 memberByIdMap,
                 clusterSessionId,
                 leadershipTermId,

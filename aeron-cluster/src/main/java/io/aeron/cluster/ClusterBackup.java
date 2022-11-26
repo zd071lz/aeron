@@ -24,16 +24,19 @@ import io.aeron.cluster.service.ClusterCounters;
 import io.aeron.cluster.service.ClusterMarkFile;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.exceptions.ConcurrentConcludeException;
+import io.aeron.exceptions.ConfigurationException;
+import io.aeron.security.CredentialsSupplier;
+import io.aeron.security.NullCredentialsSupplier;
 import org.agrona.CloseHelper;
 import org.agrona.ErrorHandler;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.IoUtil;
-import org.agrona.collections.Int2ObjectHashMap;
 import org.agrona.concurrent.*;
 import org.agrona.concurrent.errors.DistinctErrorLog;
 import org.agrona.concurrent.status.AtomicCounter;
 
 import java.io.File;
+import java.util.Arrays;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
@@ -41,6 +44,7 @@ import java.util.function.Supplier;
 
 import static io.aeron.CommonContext.ENDPOINT_PARAM_NAME;
 import static io.aeron.cluster.ConsensusModule.Configuration.SERVICE_ID;
+import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.LIVENESS_TIMEOUT_MS;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.util.concurrent.atomic.AtomicIntegerFieldUpdater.newUpdater;
 import static org.agrona.SystemUtil.getDurationInNanos;
@@ -173,6 +177,26 @@ public final class ClusterBackup implements AutoCloseable
         }
     }
 
+    /**
+     * Defines the type of node that this will receive log data from
+     */
+    public enum SourceType
+    {
+        /**
+         * Receive from any node in the cluster.
+         */
+        ANY,
+        /**
+         * Only receive data from the leader node.
+         */
+        LEADER,
+        /**
+         * Receive data from any node that is not the leader.
+         */
+        FOLLOWER;
+    }
+
+
     private final ClusterBackup.Context ctx;
     private final AgentInvoker agentInvoker;
     private final AgentRunner agentRunner;
@@ -275,15 +299,9 @@ public final class ClusterBackup implements AutoCloseable
     public static class Configuration
     {
         /**
-         * Default which is derived from {@link ConsensusModule.Context#consensusChannel()} with the member endpoint
-         * added for the consensus channel.
+         * Channel template used for catchup and replication of log and snapshots.
          */
-        public static final String CONSENSUS_CHANNEL_DEFAULT;
-
-        /**
-         * Member endpoint used for the catchup channel.
-         */
-        public static final String CATCHUP_ENDPOINT_DEFAULT;
+        public static final String CLUSTER_BACKUP_CATCHUP_ENDPOINT_PROP_NAME = "aeron.cluster.backup.catchup.endpoint";
 
         /**
          * Channel template used for catchup and replication of log and snapshots.
@@ -337,23 +355,38 @@ public final class ClusterBackup implements AutoCloseable
          */
         public static final long CLUSTER_BACKUP_PROGRESS_TIMEOUT_DEFAULT_NS = TimeUnit.SECONDS.toNanos(10);
 
-        static
+        /**
+         * The source type used for the cluster backup. Should match on of the {@link SourceType} enum values.
+         */
+        public static final String CLUSTER_BACKUP_SOURCE_TYPE_PROP_NAME = "aeron.cluster.backup.source.type";
+
+        /**
+         * Default source type to receive log traffic from.
+         */
+        public static final String CLUSTER_BACKUP_SOURCE_TYPE_DEFAULT = SourceType.FOLLOWER.name();
+
+        /**
+         * The value of system property {@link #CLUSTER_BACKUP_CATCHUP_CHANNEL_PROP_NAME} if set, otherwise it will
+         * try to derive the catchup endpoint from {@link ConsensusModule.Configuration#clusterMembers()} and
+         * {@link ConsensusModule.Configuration#clusterMemberId()}. Failing that null will be returned.
+         *
+         * @return system property {@link #CLUSTER_BACKUP_CATCHUP_CHANNEL_PROP_NAME}, the derived value, or null.
+         */
+        public static String catchupEndpoint()
         {
-            final ClusterMember[] clusterMembers = ClusterMember.parse(ConsensusModule.Configuration.clusterMembers());
-            final Int2ObjectHashMap<ClusterMember> clusterMemberByIdMap = new Int2ObjectHashMap<>();
+            String configuredCatchupEndpoint = System.getProperty(CLUSTER_BACKUP_CATCHUP_CHANNEL_PROP_NAME);
 
-            ClusterMember.addClusterMemberIds(clusterMembers, clusterMemberByIdMap);
+            if (null == configuredCatchupEndpoint && null != ConsensusModule.Configuration.clusterMembers())
+            {
+                final ClusterMember member = ClusterMember.determineMember(
+                    ClusterMember.parse(ConsensusModule.Configuration.clusterMembers()),
+                    ConsensusModule.Configuration.clusterMemberId(),
+                    ConsensusModule.Configuration.memberEndpoints());
 
-            final ClusterMember member = ClusterMember.determineMember(
-                clusterMembers,
-                ConsensusModule.Configuration.clusterMemberId(),
-                ConsensusModule.Configuration.memberEndpoints());
+                configuredCatchupEndpoint = member.catchupEndpoint();
+            }
 
-            final ChannelUri consensusUri = ChannelUri.parse(ConsensusModule.Configuration.consensusChannel());
-            consensusUri.put(ENDPOINT_PARAM_NAME, member.consensusEndpoint());
-
-            CONSENSUS_CHANNEL_DEFAULT = consensusUri.toString();
-            CATCHUP_ENDPOINT_DEFAULT = member.catchupEndpoint();
+            return configuredCatchupEndpoint;
         }
 
         /**
@@ -366,6 +399,36 @@ public final class ClusterBackup implements AutoCloseable
         public static String catchupChannel()
         {
             return System.getProperty(CLUSTER_BACKUP_CATCHUP_CHANNEL_PROP_NAME, CLUSTER_BACKUP_CATCHUP_CHANNEL_DEFAULT);
+        }
+
+        /**
+         * The value of system property {@link ConsensusModule.Configuration#consensusChannel()} if set. If that channel
+         * does not have an endpoint set, then this will try to derive one using
+         * {@link ConsensusModule.Configuration#clusterMembers()} and
+         * {@link ConsensusModule.Configuration#clusterMemberId()}.
+         *
+         * @return system property {@link #CLUSTER_BACKUP_CATCHUP_CHANNEL_PROP_NAME}, the derived value, or null.
+         */
+        public static String consensusChannel()
+        {
+            String consensusChannel = ConsensusModule.Configuration.consensusChannel();
+
+            if (null != consensusChannel && null != ConsensusModule.Configuration.clusterMembers())
+            {
+                final ChannelUri consensusUri = ChannelUri.parse(consensusChannel);
+                if (!consensusUri.containsKey(ENDPOINT_PARAM_NAME))
+                {
+                    final ClusterMember member = ClusterMember.determineMember(
+                        ClusterMember.parse(ConsensusModule.Configuration.clusterMembers()),
+                        ConsensusModule.Configuration.clusterMemberId(),
+                        ConsensusModule.Configuration.memberEndpoints());
+
+                    consensusUri.put(ENDPOINT_PARAM_NAME, member.consensusEndpoint());
+                    consensusChannel = consensusUri.toString();
+                }
+            }
+
+            return consensusChannel;
         }
 
         /**
@@ -414,12 +477,24 @@ public final class ClusterBackup implements AutoCloseable
             return getDurationInNanos(
                 CLUSTER_BACKUP_COOL_DOWN_INTERVAL_PROP_NAME, CLUSTER_BACKUP_COOL_DOWN_INTERVAL_DEFAULT_NS);
         }
+
+        /**
+         * Returns the string representation of the {@link SourceType} that this backup instance will use depending on
+         * the value of the {@link #CLUSTER_BACKUP_CATCHUP_CHANNEL_PROP_NAME} system property if set or
+         * {@link #CLUSTER_BACKUP_SOURCE_TYPE_DEFAULT} if not.
+         *
+         * @return the configured source type.
+         */
+        public static String clusterBackupSourceType()
+        {
+            return System.getProperty(CLUSTER_BACKUP_SOURCE_TYPE_PROP_NAME, CLUSTER_BACKUP_SOURCE_TYPE_DEFAULT);
+        }
     }
 
     /**
      * Context for overriding default configuration for {@link ClusterBackup}.
      */
-    public static class Context
+    public static class Context implements Cloneable
     {
         private static final AtomicIntegerFieldUpdater<Context> IS_CONCLUDED_UPDATER = newUpdater(
             Context.class, "isConcluded");
@@ -430,12 +505,12 @@ public final class ClusterBackup implements AutoCloseable
         private Aeron aeron;
 
         private int clusterId = ClusteredServiceContainer.Configuration.clusterId();
-        private String consensusChannel = Configuration.CONSENSUS_CHANNEL_DEFAULT;
+        private String consensusChannel = Configuration.consensusChannel();
         private int consensusStreamId = ConsensusModule.Configuration.consensusStreamId();
         private int consensusModuleSnapshotStreamId = ConsensusModule.Configuration.snapshotStreamId();
         private int serviceSnapshotStreamId = ClusteredServiceContainer.Configuration.snapshotStreamId();
         private int logStreamId = ConsensusModule.Configuration.logStreamId();
-        private String catchupEndpoint = Configuration.CATCHUP_ENDPOINT_DEFAULT;
+        private String catchupEndpoint = Configuration.catchupEndpoint();
         private String catchupChannel = Configuration.catchupChannel();
 
         private long clusterBackupIntervalNs = Configuration.clusterBackupIntervalNs();
@@ -467,6 +542,8 @@ public final class ClusterBackup implements AutoCloseable
         private ShutdownSignalBarrier shutdownSignalBarrier;
         private Runnable terminationHook;
         private ClusterBackupEventsListener eventsListener;
+        private CredentialsSupplier credentialsSupplier;
+        private String sourceType = Configuration.clusterBackupSourceType();
 
         /**
          * Perform a shallow copy of the object.
@@ -508,6 +585,11 @@ public final class ClusterBackup implements AutoCloseable
                 IoUtil.delete(clusterDir, false);
             }
 
+            if (null == catchupEndpoint)
+            {
+                throw new ClusterException("ClusterBackup.Context.catchupEndpoint must be set");
+            }
+
             if (!clusterDir.exists() && !clusterDir.mkdirs())
             {
                 throw new ClusterException("failed to create cluster dir: " + clusterDir.getAbsolutePath());
@@ -525,7 +607,7 @@ public final class ClusterBackup implements AutoCloseable
                     ClusterComponentType.BACKUP,
                     errorBufferLength,
                     epochClock,
-                    0);
+                    LIVENESS_TIMEOUT_MS);
             }
 
             if (null == errorLog)
@@ -595,7 +677,7 @@ public final class ClusterBackup implements AutoCloseable
             if (null == nextQueryDeadlineMsCounter)
             {
                 nextQueryDeadlineMsCounter = ClusterCounters.allocate(
-                    aeron, buffer, "ClusterBackup next query deadline (ms)", QUERY_DEADLINE_TYPE_ID, clusterId);
+                    aeron, buffer, "ClusterBackup next query deadline in ms", QUERY_DEADLINE_TYPE_ID, clusterId);
             }
 
             if (null == threadFactory)
@@ -650,6 +732,22 @@ public final class ClusterBackup implements AutoCloseable
             if (null == terminationHook)
             {
                 terminationHook = () -> shutdownSignalBarrier.signalAll();
+            }
+
+            if (null == credentialsSupplier)
+            {
+                credentialsSupplier = new NullCredentialsSupplier();
+            }
+
+            try
+            {
+                SourceType.valueOf(sourceType);
+            }
+            catch (final IllegalArgumentException ex)
+            {
+                throw new ConfigurationException(
+                    "ClusterBackup.Context.sourceType=" + sourceType + " is not valid. Must be one of: " +
+                    Arrays.toString(SourceType.values()));
             }
 
             concludeMarkFile();
@@ -1123,11 +1221,11 @@ public final class ClusterBackup implements AutoCloseable
         }
 
         /**
-         * Set the catchup endpoint to use for log retrieval.
+         * Set the endpoint that will be subscribed to in order to receive logs and snapshots.
          *
          * @param catchupEndpoint to use for the log retrieval.
          * @return catchup endpoint to use for the log retrieval.
-         * @see Configuration#CATCHUP_ENDPOINT_DEFAULT
+         * @see Configuration#catchupEndpoint()
          */
         public Context catchupEndpoint(final String catchupEndpoint)
         {
@@ -1139,7 +1237,7 @@ public final class ClusterBackup implements AutoCloseable
          * Get the catchup endpoint to use for log retrieval.
          *
          * @return catchup endpoint to use for the log retrieval.
-         * @see Configuration#CATCHUP_ENDPOINT_DEFAULT
+         * @see Configuration#catchupEndpoint()
          */
         public String catchupEndpoint()
         {
@@ -1525,6 +1623,50 @@ public final class ClusterBackup implements AutoCloseable
         public boolean useAgentInvoker()
         {
             return useAgentInvoker;
+        }
+
+        /**
+         * Set the {@link CredentialsSupplier} to be used for authentication with the cluster.
+         *
+         * @param credentialsSupplier to be used for authentication with the cluster.
+         * @return this for fluent API.
+         */
+        public Context credentialsSupplier(final CredentialsSupplier credentialsSupplier)
+        {
+            this.credentialsSupplier = credentialsSupplier;
+            return this;
+        }
+
+        /**
+         * Get the {@link CredentialsSupplier} to be used for authentication with the cluster.
+         *
+         * @return the {@link CredentialsSupplier} to be used for authentication with the cluster.
+         */
+        public CredentialsSupplier credentialsSupplier()
+        {
+            return this.credentialsSupplier;
+        }
+
+        /**
+         * Set the {@link SourceType} to be used for this backup instance.
+         *
+         * @param sourceType type of sources to receive log traffic from.
+         * @return this for a fluent API
+         */
+        public Context sourceType(final SourceType sourceType)
+        {
+            this.sourceType = sourceType.name();
+            return this;
+        }
+
+        /**
+         * Get the currently configured source type
+         * @return source type for this backup instance.
+         * @throws IllegalArgumentException if the configured source type is not one of {@link SourceType}
+         */
+        public SourceType sourceType()
+        {
+            return SourceType.valueOf(sourceType);
         }
 
         /**

@@ -20,6 +20,8 @@ import io.aeron.archive.checksum.Checksum;
 import io.aeron.archive.checksum.Checksums;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.client.ArchiveException;
+import io.aeron.driver.DutyCycleTracker;
+import io.aeron.driver.status.DutyCycleStallTracker;
 import io.aeron.exceptions.ConcurrentConcludeException;
 import io.aeron.exceptions.ConfigurationException;
 import io.aeron.security.Authenticator;
@@ -45,6 +47,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.Supplier;
 
+import static io.aeron.AeronCounters.validateCounterTypeId;
+import static io.aeron.CommonContext.ENDPOINT_PARAM_NAME;
+import static io.aeron.archive.Archive.Configuration.ARCHIVE_CONTROL_SESSIONS_TYPE_ID;
 import static io.aeron.archive.ArchiveThreadingMode.DEDICATED;
 import static io.aeron.logbuffer.LogBufferDescriptor.TERM_MAX_LENGTH;
 import static io.aeron.logbuffer.LogBufferDescriptor.TERM_MIN_LENGTH;
@@ -389,6 +394,36 @@ public final class Archive implements AutoCloseable
             io.aeron.driver.Configuration.publicationLingerTimeoutNs();
 
         /**
+         * Property name for threshold value for the conductor work cycle threshold to track for being exceeded.
+         */
+        public static final String CONDUCTOR_CYCLE_THRESHOLD_PROP_NAME = "aeron.archive.conductor.cycle.threshold";
+
+        /**
+         * Default threshold value for the conductor work cycle threshold to track for being exceeded.
+         */
+        public static final long CONDUCTOR_CYCLE_THRESHOLD_DEFAULT_NS = TimeUnit.MILLISECONDS.toNanos(1000);
+
+        /**
+         * Property name for threshold value for the recorder work cycle threshold to track for being exceeded.
+         */
+        public static final String RECORDER_CYCLE_THRESHOLD_PROP_NAME = "aeron.archive.recorder.cycle.threshold";
+
+        /**
+         * Default threshold value for the recorder work cycle threshold to track for being exceeded.
+         */
+        public static final long RECORDER_CYCLE_THRESHOLD_DEFAULT_NS = TimeUnit.MILLISECONDS.toNanos(1000);
+
+        /**
+         * Property name for threshold value for the replayer work cycle threshold to track for being exceeded.
+         */
+        public static final String REPLAYER_CYCLE_THRESHOLD_PROP_NAME = "aeron.archive.replayer.cycle.threshold";
+
+        /**
+         * Default threshold value for the replayer work cycle threshold to track for being exceeded.
+         */
+        public static final long REPLAYER_CYCLE_THRESHOLD_DEFAULT_NS = TimeUnit.MILLISECONDS.toNanos(1000);
+
+        /**
          * Should the archive delete existing files on start. Default is false and should only be true for testing.
          */
         public static final String ARCHIVE_DIR_DELETE_ON_START_PROP_NAME = "aeron.archive.dir.delete.on.start";
@@ -397,13 +432,6 @@ public final class Archive implements AutoCloseable
          * Channel for receiving replication streams replayed from another archive.
          */
         public static final String REPLICATION_CHANNEL_PROP_NAME = "aeron.archive.replication.channel";
-
-        /**
-         * Channel for receiving replication streams replayed from another archive.
-         *
-         * @see #REPLICATION_CHANNEL_PROP_NAME
-         */
-        public static final String REPLICATION_CHANNEL_DEFAULT = "aeron:udp?endpoint=localhost:0";
 
         /**
          * Name of the system property for specifying a supplier of {@link Authenticator} for the archive.
@@ -460,6 +488,16 @@ public final class Archive implements AutoCloseable
          * to be used for checksum validation during replay.
          */
         public static final String REPLAY_CHECKSUM_PROP_NAME = "aeron.archive.replay.checksum";
+
+        /**
+         * Update interval in ms for archive mark file.
+         */
+        static final long MARK_FILE_UPDATE_INTERVAL_MS = TimeUnit.SECONDS.toMillis(1);
+
+        /**
+         * Timeout in milliseconds for detecting if there is an active Archive instance.
+         */
+        static final long LIVENESS_TIMEOUT_MS = 10 * MARK_FILE_UPDATE_INTERVAL_MS;
 
         /**
          * Get the directory name to be used for storing the archive.
@@ -664,6 +702,36 @@ public final class Archive implements AutoCloseable
         }
 
         /**
+         * Get threshold value for the conductor work cycle threshold to track for being exceeded.
+         *
+         * @return threshold value in nanoseconds.
+         */
+        public static long conductorCycleThresholdNs()
+        {
+            return getDurationInNanos(CONDUCTOR_CYCLE_THRESHOLD_PROP_NAME, CONDUCTOR_CYCLE_THRESHOLD_DEFAULT_NS);
+        }
+
+        /**
+         * Get threshold value for the recorder work cycle threshold to track for being exceeded.
+         *
+         * @return threshold value in nanoseconds.
+         */
+        public static long recorderCycleThresholdNs()
+        {
+            return getDurationInNanos(RECORDER_CYCLE_THRESHOLD_PROP_NAME, RECORDER_CYCLE_THRESHOLD_DEFAULT_NS);
+        }
+
+        /**
+         * Get threshold value for the replayer work cycle threshold to track for being exceeded.
+         *
+         * @return threshold value in nanoseconds.
+         */
+        public static long replayerCycleThresholdNs()
+        {
+            return getDurationInNanos(REPLAYER_CYCLE_THRESHOLD_PROP_NAME, REPLAYER_CYCLE_THRESHOLD_DEFAULT_NS);
+        }
+
+        /**
          * Whether to delete directory on start or not.
          *
          * @return whether to delete directory on start or not.
@@ -675,15 +743,13 @@ public final class Archive implements AutoCloseable
         }
 
         /**
-         * The value {@link #REPLICATION_CHANNEL_DEFAULT} or system property
-         * {@link #REPLICATION_CHANNEL_PROP_NAME} if set.
+         * The system property {@link #REPLICATION_CHANNEL_PROP_NAME} if set, null otherwise.
          *
-         * @return {@link #REPLICATION_CHANNEL_DEFAULT} or system property
-         * {@link #REPLICATION_CHANNEL_PROP_NAME} if set.
+         * @return system property {@link #REPLICATION_CHANNEL_PROP_NAME} if set.
          */
         public static String replicationChannel()
         {
-            return System.getProperty(REPLICATION_CHANNEL_PROP_NAME, REPLICATION_CHANNEL_DEFAULT);
+            return System.getProperty(REPLICATION_CHANNEL_PROP_NAME);
         }
 
         /**
@@ -816,6 +882,9 @@ public final class Archive implements AutoCloseable
 
         private long connectTimeoutNs = Configuration.connectTimeoutNs();
         private long replayLingerTimeoutNs = Configuration.replayLingerTimeoutNs();
+        private long conductorCycleThresholdNs = Configuration.conductorCycleThresholdNs();
+        private long recorderCycleThresholdNs = Configuration.recorderCycleThresholdNs();
+        private long replayerCycleThresholdNs = Configuration.replayerCycleThresholdNs();
         private long maxCatalogEntries = Configuration.maxCatalogEntries();
         private long catalogCapacity = Configuration.catalogCapacity();
         private long lowStorageSpaceThreshold = Configuration.lowStorageSpaceThreshold();
@@ -852,6 +921,9 @@ public final class Archive implements AutoCloseable
         private UnsafeBuffer dataBuffer;
         private UnsafeBuffer replayBuffer;
         private UnsafeBuffer recordChecksumBuffer;
+        private DutyCycleTracker conductorDutyCycleTracker;
+        private DutyCycleTracker recorderDutyCycleTracker;
+        private DutyCycleTracker replayerDutyCycleTracker;
 
         /**
          * Perform a shallow copy of the object.
@@ -892,14 +964,32 @@ public final class Archive implements AutoCloseable
                 throw new ConfigurationException("invalid fileIoMaxLength=" + fileIoMaxLength);
             }
 
+            if (null == controlChannel)
+            {
+                throw new ConfigurationException("Archive.Context.controlChannel must be set");
+            }
+
             if (!controlChannel.startsWith(CommonContext.UDP_CHANNEL))
             {
-                throw new ConfigurationException("remote control channel must be UDP media: uri=" + controlChannel);
+                throw new ConfigurationException(
+                    "Archive.Context.controlChannel must be UDP media: uri=" + controlChannel);
             }
 
             if (!localControlChannel.startsWith(CommonContext.IPC_CHANNEL))
             {
                 throw new ConfigurationException("local control channel must be IPC media: uri=" + localControlChannel);
+            }
+
+            if (null == replicationChannel)
+            {
+                throw new ConfigurationException("Archive.Context.replicationChannel must be set");
+            }
+
+            if (recordingEventsEnabled() && null == recordingEventsChannel())
+            {
+                throw new ConfigurationException(
+                    "Archive.Context.recordingEventsChannel must be set if " +
+                    "Archive.Context.recordingEventsEnabled is true");
             }
 
             if (null == archiveDir)
@@ -1017,6 +1107,18 @@ public final class Archive implements AutoCloseable
                 idleStrategySupplier = Configuration.idleStrategySupplier(null);
             }
 
+            if (null == conductorDutyCycleTracker)
+            {
+                conductorDutyCycleTracker = new DutyCycleStallTracker(
+                    aeron.addCounter(
+                        AeronCounters.ARCHIVE_MAX_CYCLE_TIME_TYPE_ID, "archive-conductor max cycle time in ns"),
+                    aeron.addCounter(
+                        AeronCounters.ARCHIVE_CYCLE_TIME_THRESHOLD_EXCEEDED_TYPE_ID,
+                        "archive-conductor work cycle time exceeded count: threshold=" +
+                        conductorCycleThresholdNs + "ns"),
+                    conductorCycleThresholdNs);
+            }
+
             if (DEDICATED == threadingMode)
             {
                 if (null == recorderIdleStrategySupplier)
@@ -1035,6 +1137,32 @@ public final class Archive implements AutoCloseable
                     {
                         replayerIdleStrategySupplier = idleStrategySupplier;
                     }
+                }
+
+                if (null == recorderDutyCycleTracker)
+                {
+                    recorderDutyCycleTracker = new DutyCycleStallTracker(
+                        aeron.addCounter(
+                            AeronCounters.ARCHIVE_MAX_CYCLE_TIME_TYPE_ID,
+                            "archive-recorder max cycle time in ns"),
+                        aeron.addCounter(
+                            AeronCounters.ARCHIVE_CYCLE_TIME_THRESHOLD_EXCEEDED_TYPE_ID,
+                            "archive-recorder work cycle time exceeded count: threshold=" +
+                            recorderCycleThresholdNs + "ns"),
+                        recorderCycleThresholdNs);
+                }
+
+                if (null == replayerDutyCycleTracker)
+                {
+                    replayerDutyCycleTracker = new DutyCycleStallTracker(
+                        aeron.addCounter(
+                            AeronCounters.ARCHIVE_MAX_CYCLE_TIME_TYPE_ID,
+                            "archive-replayer max cycle time in ns"),
+                        aeron.addCounter(
+                            AeronCounters.ARCHIVE_CYCLE_TIME_THRESHOLD_EXCEEDED_TYPE_ID,
+                            "archive-replayer work cycle time exceeded count: threshold=" +
+                            replayerCycleThresholdNs + "ns"),
+                        replayerCycleThresholdNs);
                 }
             }
 
@@ -1077,13 +1205,38 @@ public final class Archive implements AutoCloseable
                 archiveClientContext = new AeronArchive.Context();
             }
 
+            if (null == archiveClientContext.controlResponseChannel())
+            {
+                final ChannelUri controlChannelUri = ChannelUri.parse(controlChannel);
+                final String endpoint = controlChannelUri.get(ENDPOINT_PARAM_NAME);
+                int separatorIndex = -1;
+
+                if (null == endpoint || -1 == (separatorIndex = endpoint.lastIndexOf(':')))
+                {
+                    throw new ConfigurationException(
+                        "Unable to derive Archive.Context.archiveClientContext.controlResponseChannel as " +
+                        "Archive.Context.controlChannel.endpoint=" + endpoint +
+                        " and is not in the <host>:<port> format");
+
+                }
+
+                final String responseEndpoint = endpoint.substring(0, separatorIndex) + ":0";
+                final String responseChannel = new ChannelUriStringBuilder()
+                    .media("udp")
+                    .endpoint(responseEndpoint)
+                    .build();
+
+                archiveClientContext.controlResponseChannel(responseChannel);
+            }
+
             archiveClientContext.aeron(aeron).lock(NoOpLock.INSTANCE).errorHandler(errorHandler);
 
             if (null == controlSessionsCounter)
             {
                 controlSessionsCounter = aeron.addCounter(
-                    Configuration.ARCHIVE_CONTROL_SESSIONS_TYPE_ID, "Archive Control Sessions");
+                    ARCHIVE_CONTROL_SESSIONS_TYPE_ID, "Archive Control Sessions");
             }
+            validateCounterTypeId(aeron, controlSessionsCounter, ARCHIVE_CONTROL_SESSIONS_TYPE_ID);
 
             int expectedCount = DEDICATED == threadingMode ? 2 : 0;
             expectedCount += aeron.conductorAgentInvoker() == null ? 1 : 0;
@@ -1387,7 +1540,7 @@ public final class Archive implements AutoCloseable
         }
 
         /**
-         * Get the channel URI on which the recording events publication will publish.
+         * Get the channel URI on which the recording events publication will publish. Will be null if not configured.
          *
          * @return the channel URI on which the recording events publication will publish.
          * @see io.aeron.archive.client.AeronArchive.Configuration#RECORDING_EVENTS_CHANNEL_PROP_NAME
@@ -1534,6 +1687,154 @@ public final class Archive implements AutoCloseable
         public long replayLingerTimeoutNs()
         {
             return replayLingerTimeoutNs;
+        }
+
+        /**
+         * Set a threshold for the conductor work cycle time which when exceed it will increment the
+         * conductor cycle time exceeded count.
+         *
+         * @param thresholdNs value in nanoseconds
+         * @return this for fluent API.
+         * @see io.aeron.archive.Archive.Configuration#CONDUCTOR_CYCLE_THRESHOLD_PROP_NAME
+         * @see io.aeron.archive.Archive.Configuration#CONDUCTOR_CYCLE_THRESHOLD_DEFAULT_NS
+         */
+        public Context conductorCycleThresholdNs(final long thresholdNs)
+        {
+            this.conductorCycleThresholdNs = thresholdNs;
+            return this;
+        }
+
+        /**
+         * Threshold for the conductor work cycle time which when exceed it will increment the
+         * conductor cycle time exceeded count.
+         *
+         * @return threshold to track for the conductor work cycle time.
+         */
+        public long conductorCycleThresholdNs()
+        {
+            return conductorCycleThresholdNs;
+        }
+
+        /**
+         * Set a threshold for the recorder work cycle time which when exceed it will increment the
+         * recorder cycle time exceeded count.
+         *
+         * @param thresholdNs value in nanoseconds
+         * @return this for fluent API.
+         * @see io.aeron.archive.Archive.Configuration#RECORDER_CYCLE_THRESHOLD_PROP_NAME
+         * @see io.aeron.archive.Archive.Configuration#RECORDER_CYCLE_THRESHOLD_DEFAULT_NS
+         */
+        public Context recorderCycleThresholdNs(final long thresholdNs)
+        {
+            this.recorderCycleThresholdNs = thresholdNs;
+            return this;
+        }
+
+        /**
+         * Threshold for the recorder work cycle time which when exceed it will increment the
+         * recorder cycle time exceeded count.
+         *
+         * @return threshold to track for the recorder work cycle time.
+         */
+        public long recorderCycleThresholdNs()
+        {
+            return recorderCycleThresholdNs;
+        }
+
+        /**
+         * Set a threshold for the replayer work cycle time which when exceed it will increment the
+         * replayer cycle time exceeded count.
+         *
+         * @param thresholdNs value in nanoseconds
+         * @return this for fluent API.
+         * @see io.aeron.archive.Archive.Configuration#REPLAYER_CYCLE_THRESHOLD_PROP_NAME
+         * @see io.aeron.archive.Archive.Configuration#REPLAYER_CYCLE_THRESHOLD_DEFAULT_NS
+         */
+        public Context replayerCycleThresholdNs(final long thresholdNs)
+        {
+            this.replayerCycleThresholdNs = thresholdNs;
+            return this;
+        }
+
+        /**
+         * Threshold for the replayer work cycle time which when exceed it will increment the
+         * replayer cycle time exceeded count.
+         *
+         * @return threshold to track for the replayer work cycle time.
+         */
+        public long replayerCycleThresholdNs()
+        {
+            return replayerCycleThresholdNs;
+        }
+
+        /**
+         * Set the duty cycle tracker for the conductor.
+         *
+         * @param dutyCycleTracker for the conductor.
+         * @return this for a fluent API.
+         */
+        public Context conductorDutyCycleTracker(final DutyCycleTracker dutyCycleTracker)
+        {
+            this.conductorDutyCycleTracker = dutyCycleTracker;
+            return this;
+        }
+
+        /**
+         * The duty cycle tracker for the conductor.
+         *
+         * @return duty cycle tracker for the conductor.
+         */
+        public DutyCycleTracker conductorDutyCycleTracker()
+        {
+            return conductorDutyCycleTracker;
+        }
+
+        /**
+         * Set the duty cycle tracker for the recorder.
+         * NOTE: Only used in DEDICATED threading mode.
+         *
+         * @param dutyCycleTracker for the recorder.
+         * @return this for a fluent API.
+         */
+        public Context recorderDutyCycleTracker(final DutyCycleTracker dutyCycleTracker)
+        {
+            this.recorderDutyCycleTracker = dutyCycleTracker;
+            return this;
+        }
+
+        /**
+         * The duty cycle tracker for the recorder.
+         * NOTE: Only used in DEDICATED threading mode.
+         *
+         * @return duty cycle tracker for the recorder.
+         */
+        public DutyCycleTracker recorderDutyCycleTracker()
+        {
+            return recorderDutyCycleTracker;
+        }
+
+        /**
+         * Set the duty cycle tracker for the replayer.
+         * NOTE: Only used in DEDICATED threading mode.
+         *
+         * @param dutyCycleTracker for the replayer.
+         * @return this for a fluent API.
+         */
+        public Context replayerDutyCycleTracker(final DutyCycleTracker dutyCycleTracker)
+        {
+            this.replayerDutyCycleTracker = dutyCycleTracker;
+            return this;
+        }
+
+        /**
+         * The duty cycle tracker for the replayer.
+         * NOTE: Only used in DEDICATED threading mode.
+         *
+         * @return duty cycle tracker for the replayer.
+         */
+        public DutyCycleTracker replayerDutyCycleTracker()
+        {
+            return replayerDutyCycleTracker;
         }
 
         /**
@@ -2537,6 +2838,12 @@ public final class Archive implements AutoCloseable
                 "\n    dataBuffer=" + dataBuffer +
                 "\n    replayBuffer=" + replayBuffer +
                 "\n    recordChecksumBuffer=" + recordChecksumBuffer +
+                "\n    conductorCycleThresholdNs=" + conductorCycleThresholdNs +
+                "\n    recorderCycleThresholdNs=" + recorderCycleThresholdNs +
+                "\n    replayerCycleThresholdNs=" + replayerCycleThresholdNs +
+                "\n    conductorDutyCycleTracker=" + conductorDutyCycleTracker +
+                "\n    recorderDutyCycleTracker=" + recorderDutyCycleTracker +
+                "\n    replayerDutyCycleTracker=" + replayerDutyCycleTracker +
                 "\n}";
         }
     }

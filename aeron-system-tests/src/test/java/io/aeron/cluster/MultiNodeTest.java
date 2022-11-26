@@ -19,6 +19,7 @@ import io.aeron.cluster.client.AeronCluster;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.test.InterruptAfter;
 import io.aeron.test.InterruptingTestCallback;
+import io.aeron.test.SlowTest;
 import io.aeron.test.SystemTestWatcher;
 import io.aeron.test.cluster.TestCluster;
 import io.aeron.test.cluster.TestNode;
@@ -32,14 +33,14 @@ import static io.aeron.test.cluster.TestCluster.aCluster;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 @ExtendWith(InterruptingTestCallback.class)
-public class MultiNodeTest
+class MultiNodeTest
 {
     @RegisterExtension
     final SystemTestWatcher systemTestWatcher = new SystemTestWatcher();
 
     @Test
     @InterruptAfter(20)
-    public void shouldElectAppointedLeaderWithThreeNodesWithNoReplayNoSnapshot()
+    void shouldElectAppointedLeaderWithThreeNodesWithNoReplayNoSnapshot()
     {
         final int appointedLeaderIndex = 1;
 
@@ -56,7 +57,8 @@ public class MultiNodeTest
 
     @Test
     @InterruptAfter(20)
-    public void shouldReplayWithAppointedLeaderWithThreeNodesWithNoSnapshot()
+    @SlowTest
+    void shouldReplayWithAppointedLeaderWithThreeNodesWithNoSnapshot()
     {
         final int appointedLeaderIndex = 1;
 
@@ -70,9 +72,7 @@ public class MultiNodeTest
 
         final int messageCount = 10;
         cluster.connectClient();
-        cluster.sendMessages(messageCount);
-        cluster.awaitResponseMessageCount(messageCount);
-        cluster.awaitServicesMessageCount(messageCount);
+        cluster.sendAndAwaitMessages(messageCount);
 
         cluster.stopAllNodes();
         cluster.restartAllNodes(false);
@@ -83,7 +83,8 @@ public class MultiNodeTest
 
     @Test
     @InterruptAfter(20)
-    public void shouldCatchUpWithAppointedLeaderWithThreeNodesWithNoSnapshot()
+    @SlowTest
+    void shouldCatchUpWithAppointedLeaderWithThreeNodesWithNoSnapshot()
     {
         final int appointedLeaderIndex = 1;
 
@@ -99,15 +100,11 @@ public class MultiNodeTest
         final int postCatchupMessageCount = 10;
         final int totalMessageCount = preCatchupMessageCount + postCatchupMessageCount;
         cluster.connectClient();
-        cluster.sendMessages(preCatchupMessageCount);
-        cluster.awaitResponseMessageCount(preCatchupMessageCount);
-        cluster.awaitServicesMessageCount(preCatchupMessageCount);
+        cluster.sendAndAwaitMessages(preCatchupMessageCount);
 
         cluster.stopNode(cluster.node(0));
 
-        cluster.sendMessages(postCatchupMessageCount);
-        cluster.awaitResponseMessageCount(totalMessageCount);
-        cluster.awaitServicesMessageCount(totalMessageCount);
+        cluster.sendAndAwaitMessages(postCatchupMessageCount, totalMessageCount);
 
         cluster.stopAllNodes();
         cluster.restartAllNodes(false);

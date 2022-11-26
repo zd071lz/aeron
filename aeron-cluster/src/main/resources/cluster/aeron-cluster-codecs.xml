@@ -2,7 +2,7 @@
 <sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
                    package="io.aeron.cluster.codecs"
                    id="111"
-                   version="8"
+                   version="10"
                    semanticVersion="5.3"
                    description="Message Codecs for communicating with, and within, an Aeron Cluster."
                    byteOrder="littleEndian">
@@ -86,11 +86,11 @@
 
     1. Session Connect
         - An attempt is made to establish a connection with the cluster via multicast or multi-destination-cast.
-        - If successful, a OK session-event will be sent in the return path with the list of endpoint destinations
+        - If successful, an OK session-event will be sent in the return path with the list of endpoint destinations
           for the cluster members. The leader will come first.
         - Followers can respond with a REDIRECT code and a list of member endpoint destinations in the
           detail that will have the leader first.
-        - If a change of leader occurs mid session then a new-leader-event will be sent from the new leader.
+        - If a change of leader occurs mid-session then a new-leader-event will be sent from the new leader.
 
     2. Ingress/Egress Messages - Session Messages which make up application protocol.
         - Messages are sent to a clustered service with a SessionMessageHeader followed by an application payload.
@@ -408,6 +408,12 @@
         </group>
     </sbe:message>
 
+    <sbe:message name="requestServiceAck"
+                 id="108"
+                 description="request an ack from all service container on the same node">
+        <field name="logPosition" id="1" type="int64"/>
+    </sbe:message>
+
 <!--
     Cluster Consensus Protocol
     ==========================
@@ -434,6 +440,7 @@
         <field name="logPosition"              id="2" type="int64"/>
         <field name="leadershipTermId"         id="3" type="int64"/>
         <field name="followerMemberId"         id="4" type="int32"/>
+        <field name="protocolVersion"          id="5" type="version_t" sinceVersion="9"/>
     </sbe:message>
 
     <sbe:message name="RequestVote"
@@ -443,6 +450,7 @@
         <field name="logPosition"              id="2" type="int64"/>
         <field name="candidateTermId"          id="3" type="int64"/>
         <field name="candidateMemberId"        id="4" type="int32"/>
+        <field name="protocolVersion"          id="5" type="version_t" sinceVersion="9"/>
     </sbe:message>
 
     <sbe:message name="Vote"
@@ -591,6 +599,8 @@
         <field name="lastTermBaseLogPosition"  id="6"  type="int64"/>
         <field name="commitPositionCounterId"  id="7"  type="int32"/>
         <field name="leaderMemberId"           id="8"  type="int32"/>
+        <field name="memberId"                 id="17" type="int32" sinceVersion="10"
+               description="id of member providing the response."/>
         <group name="snapshots"                id="9"  dimensionType="groupSizeEncoding"
                description="Snapshots of state for the consensus module and services.">
             <field name="recordingId"          id="10" type="int64"/>
@@ -603,7 +613,22 @@
         <data  name="clusterMembers"           id="16" type="varAsciiEncoding"/>
     </sbe:message>
 
-<!-- Serialisation of major entities in addition to others above that can be in a snapshot -->
+    <sbe:message name="HeartbeatRequest"
+                 id="79"
+                 description="Request a heartbeat response from a cluster member.">
+        <field name="correlationId"            id="1"  type="int64"/>
+        <field name="responseStreamId"         id="2"  type="int32"/>
+        <data  name="responseChannel"          id="4"  type="varAsciiEncoding"/>
+        <data  name="encodedCredentials"       id="5"  type="varDataEncoding"/>
+    </sbe:message>
+
+    <sbe:message name="HeartbeatResponse"
+                 id="80"
+                 description="Response to a heartbeat request.">
+        <field name="correlationId"            id="1"  type="int64"/>
+    </sbe:message>
+
+    <!-- Serialisation of major entities in addition to others above that can be in a snapshot -->
 
     <sbe:message name="SnapshotMarker"
                  id="100"
@@ -660,6 +685,15 @@
         <field name="memberId"                 id="1" type="int32"/>
         <field name="highMemberId"             id="2" type="int32"/>
         <data  name="clusterMembers"           id="3" type="varAsciiEncoding"/>
+    </sbe:message>
+
+    <sbe:message name="PendingMessageTracker"
+                 id="107"
+                 description="Serialised state of the service pending message tracker.">
+        <field name="nextServiceSessionId"     id="1" type="int64"/>
+        <field name="logServiceSessionId"      id="2" type="int64"/>
+        <field name="pendingMessageCapacity"   id="3" type="capacity_t"/>
+        <field name="serviceId"                id="4" type="int32"/>
     </sbe:message>
 
 </sbe:messageSchema>

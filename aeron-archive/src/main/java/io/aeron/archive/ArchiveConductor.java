@@ -23,6 +23,7 @@ import io.aeron.archive.codecs.RecordingDescriptorDecoder;
 import io.aeron.archive.codecs.RecordingSignal;
 import io.aeron.archive.codecs.SourceLocation;
 import io.aeron.archive.status.RecordingPos;
+import io.aeron.driver.DutyCycleTracker;
 import io.aeron.exceptions.AeronException;
 import io.aeron.exceptions.TimeoutException;
 import io.aeron.logbuffer.LogBufferDescriptor;
@@ -49,6 +50,7 @@ import java.util.concurrent.TimeUnit;
 
 import static io.aeron.Aeron.NULL_VALUE;
 import static io.aeron.CommonContext.*;
+import static io.aeron.archive.Archive.Configuration.MARK_FILE_UPDATE_INTERVAL_MS;
 import static io.aeron.archive.Archive.Configuration.RECORDING_SEGMENT_SUFFIX;
 import static io.aeron.archive.Archive.segmentFileName;
 import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
@@ -66,7 +68,6 @@ abstract class ArchiveConductor
     extends SessionWorker<Session>
     implements AvailableImageHandler, UnavailableCounterHandler
 {
-    private static final long MARK_FILE_UPDATE_INTERVAL_MS = TimeUnit.SECONDS.toMillis(1);
     private static final EnumSet<StandardOpenOption> FILE_OPTIONS = EnumSet.of(READ, WRITE);
     private static final String DELETE_SUFFIX = ".del";
 
@@ -96,6 +97,7 @@ abstract class ArchiveConductor
     private final AgentInvoker aeronAgentInvoker;
     private final AgentInvoker driverAgentInvoker;
     private final EpochClock epochClock;
+    private final NanoClock nanoClock;
     private final CachedEpochClock cachedEpochClock = new CachedEpochClock();
     private final File archiveDir;
     private final Subscription controlSubscription;
@@ -107,6 +109,7 @@ abstract class ArchiveConductor
     private final AuthorisationService authorisationService;
     private final ControlResponseProxy controlResponseProxy = new ControlResponseProxy();
     private final ControlSessionProxy controlSessionProxy = new ControlSessionProxy(controlResponseProxy);
+    private final DutyCycleTracker dutyCycleTracker;
     final Archive.Context ctx;
     SessionWorker<RecordingSession> recorder;
     SessionWorker<ReplaySession> replayer;
@@ -121,10 +124,12 @@ abstract class ArchiveConductor
         aeronAgentInvoker = aeron.conductorAgentInvoker();
         driverAgentInvoker = ctx.mediaDriverAgentInvoker();
         epochClock = ctx.epochClock();
+        nanoClock = ctx.nanoClock();
         archiveDir = ctx.archiveDir();
         connectTimeoutMs = TimeUnit.NANOSECONDS.toMillis(ctx.connectTimeoutNs());
         catalog = ctx.catalog();
         markFile = ctx.archiveMarkFile();
+        dutyCycleTracker = ctx.conductorDutyCycleTracker();
         cachedEpochClock.update(epochClock.time());
 
         authenticator = ctx.authenticatorSupplier().get();
@@ -156,6 +161,8 @@ abstract class ArchiveConductor
     {
         recorder = newRecorder();
         replayer = newReplayer();
+
+        dutyCycleTracker.update(nanoClock.nanoTime());
     }
 
     public void onAvailableImage(final Image image)
@@ -265,12 +272,15 @@ abstract class ArchiveConductor
      */
     public int doWork()
     {
+        final long nowNs = nanoClock.nanoTime();
         int workCount = 0;
 
         if (isAbort)
         {
             throw new AgentTerminationException("unexpected Aeron close");
         }
+
+        dutyCycleTracker.measureAndUpdate(nowNs);
 
         final long nowMs = epochClock.time();
         if (cachedEpochClock.time() != nowMs)
@@ -466,18 +476,7 @@ abstract class ArchiveConductor
 
             if (null != subscription)
             {
-                for (final RecordingSession session : recordingSessionByIdMap.values())
-                {
-                    if (subscription == session.subscription())
-                    {
-                        session.abort();
-                    }
-                }
-
-                if (0 == subscriptionRefCountMap.decrementAndGet(subscription.registrationId()))
-                {
-                    subscription.close();
-                }
+                abortRecordingSessionAndCloseSubscription(subscription);
 
                 controlSession.sendOkResponse(correlationId, controlResponseProxy);
             }
@@ -513,19 +512,7 @@ abstract class ArchiveConductor
         final Subscription subscription = removeRecordingSubscription(subscriptionId);
         if (null != subscription)
         {
-            for (final RecordingSession session : recordingSessionByIdMap.values())
-            {
-                if (subscription == session.subscription())
-                {
-                    session.abort();
-                }
-            }
-
-            if (subscriptionRefCountMap.decrementAndGet(subscriptionId) <= 0)
-            {
-                CloseHelper.close(errorHandler, subscription);
-            }
-
+            abortRecordingSessionAndCloseSubscription(subscription);
             return true;
         }
 
@@ -627,6 +614,7 @@ abstract class ArchiveConductor
         final long recordingId,
         final long position,
         final long length,
+        final int fileIoMaxLength,
         final int replayStreamId,
         final String replayChannel,
         final Counter limitPosition,
@@ -641,7 +629,7 @@ abstract class ArchiveConductor
 
         if (!catalog.hasRecording(recordingId))
         {
-            final String msg = "unknown recording id " + recordingId;
+            final String msg = "unknown recording id: " + recordingId;
             controlSession.sendErrorResponse(correlationId, UNKNOWN_RECORDING, msg, controlResponseProxy);
             return;
         }
@@ -678,6 +666,7 @@ abstract class ArchiveConductor
                 replayPosition,
                 length,
                 aeron.asyncAddExclusivePublication(channelBuilder.build(), replayStreamId),
+                fileIoMaxLength,
                 limitPosition,
                 aeron,
                 controlSession,
@@ -696,6 +685,7 @@ abstract class ArchiveConductor
         final long replayPosition,
         final long replayLength,
         final long correlationId,
+        final int fileIoMaxLength,
         final ControlSession controlSession,
         final Counter limitPositionCounter,
         final ExclusivePublication replayPublication)
@@ -711,6 +701,16 @@ abstract class ArchiveConductor
 
         catalog.recordingSummary(recordingId, recordingSummary);
 
+        final UnsafeBuffer replayBuffer;
+        if (0 < fileIoMaxLength && fileIoMaxLength < ctx.replayBuffer().capacity())
+        {
+            replayBuffer = new UnsafeBuffer(ctx.replayBuffer(), 0, fileIoMaxLength);
+        }
+        else
+        {
+            replayBuffer = ctx.replayBuffer();
+        }
+
         final ReplaySession replaySession = new ReplaySession(
             replayPosition,
             replayLength,
@@ -719,7 +719,7 @@ abstract class ArchiveConductor
             correlationId,
             controlSession,
             controlResponseProxy,
-            ctx.replayBuffer(),
+            replayBuffer,
             catalog,
             archiveDir,
             cachedEpochClock,
@@ -738,6 +738,7 @@ abstract class ArchiveConductor
         final long position,
         final long length,
         final int limitCounterId,
+        final int fileIoMaxLength,
         final int replayStreamId,
         final String replayChannel,
         final ControlSession controlSession)
@@ -765,6 +766,7 @@ abstract class ArchiveConductor
             recordingId,
             position,
             length,
+            fileIoMaxLength,
             replayStreamId,
             replayChannel,
             replayLimitCounter,
@@ -817,7 +819,7 @@ abstract class ArchiveConductor
 
         if (!catalog.hasRecording(recordingId))
         {
-            final String msg = "unknown recording " + recordingId;
+            final String msg = "unknown recording id: " + recordingId;
             controlSession.sendErrorResponse(correlationId, UNKNOWN_RECORDING, msg, controlResponseProxy);
             return null;
         }
@@ -1031,15 +1033,10 @@ abstract class ArchiveConductor
                 if (null != subscription)
                 {
                     found = 1;
-
-                    for (final RecordingSession session : recordingSessionByIdMap.values())
+                    if (0 == subscriptionRefCountMap.decrementAndGet(subscriptionId))
                     {
-                        if (subscription == session.subscription())
-                        {
-                            session.abort();
-                        }
+                        subscription.close();
                     }
-                    subscriptionRefCountMap.decrementAndGet(subscriptionId);
                 }
             }
 
@@ -1114,6 +1111,7 @@ abstract class ArchiveConductor
         final String srcControlChannel,
         final String liveDestination,
         final String replicationChannel,
+        final int fileIoMaxLength,
         final ControlSession controlSession)
     {
         final boolean hasRecording = catalog.hasRecording(dstRecordingId);
@@ -1150,6 +1148,7 @@ abstract class ArchiveConductor
             stopPosition,
             liveDestination,
             Strings.isEmpty(replicationChannel) ? ctx.replicationChannel() : replicationChannel,
+            fileIoMaxLength,
             hasRecording ? recordingSummary : null,
             remoteArchiveContext,
             cachedEpochClock,
@@ -1412,6 +1411,22 @@ abstract class ArchiveConductor
         return count;
     }
 
+    private void abortRecordingSessionAndCloseSubscription(final Subscription subscription)
+    {
+        for (final RecordingSession session : recordingSessionByIdMap.values())
+        {
+            if (subscription == session.subscription())
+            {
+                session.abort();
+            }
+        }
+
+        if (0 == subscriptionRefCountMap.decrementAndGet(subscription.registrationId()))
+        {
+            subscription.close();
+        }
+    }
+
     private int findTermOffsetForStart(
         final long correlationId,
         final ControlSession controlSession,
@@ -1574,7 +1589,7 @@ abstract class ArchiveConductor
     {
         if (!catalog.hasRecording(recordingId))
         {
-            final String msg = "unknown recording " + recordingId;
+            final String msg = "unknown recording id: " + recordingId;
             session.sendErrorResponse(correlationId, UNKNOWN_RECORDING, msg, controlResponseProxy);
             return false;
         }

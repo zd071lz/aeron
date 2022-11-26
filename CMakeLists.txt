@@ -105,7 +105,7 @@ add_definitions(-DAERON_VERSION_PATCH=${aeron_VERSION_PATCH})
 if (UNIX)
     add_compile_options(-Wall -Wpedantic -Wextra -Wno-unused-parameter)
 
-    if (CMAKE_COMPILER_IS_GNUCXX AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER "11.0")
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER "11.0")
         add_compile_options(-Wno-error=maybe-uninitialized)
     endif ()
 
@@ -127,7 +127,11 @@ if (UNIX)
         SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")
     endif (COVERAGE_BUILD)
 
-    if (AERON_ENABLE_NONSTANDARD_OPTIMIZATIONS)
+    if (AERON_ENABLE_NONSTANDARD_OPTIMIZATIONS AND
+        NOT (${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang" AND
+            ${CMAKE_CXX_COMPILER_VERSION} VERSION_GREATER_EQUAL "9" AND
+            ${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS "10"))
+        message("Set -Ofast for ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
         add_compile_options($<$<CONFIG:Release>:-Ofast>)
     endif ()
 endif ()
@@ -156,8 +160,8 @@ elseif (MSVC)
 
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MTd /Od /Zi /MP /wd4251")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MT /MP /wd4251")
-    set(CMAKE_C_FLAGS_DEBUG "/MTd")
-    set(CMAKE_C_FLAGS_RELEASE "/MT")
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /MTd")
+    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /MT")
 
     unset(CMAKE_C_STANDARD) # To avoid `/std:c11` in the compiler options
 
@@ -234,8 +238,8 @@ if (AERON_TESTS)
 
     FetchContent_Declare(
         gmock
-        URL ${CMAKE_CURRENT_SOURCE_DIR}/cppbuild/googletest-release-1.11.0.zip
-        URL_MD5 52943a59cefce0ae0491d4d2412c120b)
+        URL ${CMAKE_CURRENT_SOURCE_DIR}/cppbuild/googletest-release-1.12.1.zip
+        URL_MD5 2648d4138129812611cf6b6b4b497a3b)
 
     FetchContent_MakeAvailable(gmock)
 endif ()
@@ -248,8 +252,8 @@ if (AERON_BUILD_SAMPLES)
     set(HDR_HISTOGRAM_BUILD_PROGRAMS "OFF" CACHE INTERNAL "Set build programs option")
     FetchContent_Declare(
         hdr_histogram
-        URL ${CMAKE_CURRENT_SOURCE_DIR}/cppbuild/HdrHistogram_c-0.11.4.zip
-        URL_MD5 4d8f8ed3fe69422cf6b44fdabd98d462
+        URL ${CMAKE_CURRENT_SOURCE_DIR}/cppbuild/HdrHistogram_c-0.11.6.zip
+        URL_MD5 5477a84c26109d057cb2a3169bd70610
     )
 
 

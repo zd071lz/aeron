@@ -28,12 +28,12 @@ import net.bytebuddy.utility.JavaModule;
 
 import java.lang.instrument.Instrumentation;
 
-public class ClusterInstrumentor
+class ClusterInstrumentor
 {
     private final ResettableClassFileTransformer resettableClassFileTransformer;
     private final Instrumentation instrumentation;
 
-    public ClusterInstrumentor(
+    ClusterInstrumentor(
         final Class<?> adviceClass,
         final String simpleClassName,
         final String methodName)
@@ -49,22 +49,30 @@ public class ClusterInstrumentor
         resettableClassFileTransformer = agentBuilder
             .type(ElementMatchers.nameEndsWith(simpleClassName))
             .transform(
-                (builder, typeDescription, classLoader, module) ->
+                (builder, typeDescription, classLoader, module, protectionDomain) ->
                     builder.visit(Advice.to(adviceClass).on(ElementMatchers.named(methodName))))
             .installOn(instrumentation);
+    }
+
+    void reset()
+    {
+        resettableClassFileTransformer.reset(instrumentation, AgentBuilder.RedefinitionStrategy.RETRANSFORMATION);
     }
 
     static class AgentBuilderListener implements AgentBuilder.Listener
     {
         public void onDiscovery(
-            final String typeName, final ClassLoader classLoader, final JavaModule module, final boolean loaded)
+            final String typeName,
+            final ClassLoader classLoader,
+            final JavaModule javaModule,
+            final boolean loaded)
         {
         }
 
         public void onTransformation(
             final TypeDescription typeDescription,
             final ClassLoader classLoader,
-            final JavaModule module,
+            final JavaModule javaModule,
             final boolean loaded,
             final DynamicType dynamicType)
         {
@@ -73,7 +81,7 @@ public class ClusterInstrumentor
         public void onIgnored(
             final TypeDescription typeDescription,
             final ClassLoader classLoader,
-            final JavaModule module,
+            final JavaModule javaModule,
             final boolean loaded)
         {
         }
@@ -81,27 +89,23 @@ public class ClusterInstrumentor
         public void onError(
             final String typeName,
             final ClassLoader classLoader,
-            final JavaModule module,
+            final JavaModule javaModule,
             final boolean loaded,
             final Throwable throwable)
         {
-            System.err.println(
-                "typeName = " + typeName + ", classLoader = " + classLoader + ", module = " + module + ", loaded = " +
-                loaded);
+            System.err.println("typeName=" + typeName +
+                ", classLoader=" + classLoader +
+                ", javaModule=" + javaModule +
+                ", loaded=" + loaded);
             throwable.printStackTrace(System.err);
         }
 
         public void onComplete(
             final String typeName,
             final ClassLoader classLoader,
-            final JavaModule module,
+            final JavaModule javaModule,
             final boolean loaded)
         {
         }
-    }
-
-    public void reset()
-    {
-        resettableClassFileTransformer.reset(instrumentation, AgentBuilder.RedefinitionStrategy.RETRANSFORMATION);
     }
 }

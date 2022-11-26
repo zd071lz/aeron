@@ -90,6 +90,7 @@ public class ReceiveChannelEndpoint extends ReceiveChannelEndpointHotFields
     private final long receiverId;
     private InetSocketAddress currentControlAddress;
     private AtomicCounter localSocketAddressIndicator;
+    private int imageRefCount;
 
     /**
      * Construct the receiver end for data streams.
@@ -186,7 +187,7 @@ public class ReceiveChannelEndpoint extends ReceiveChannelEndpointHotFields
      */
     public String originalUriString()
     {
-        return udpChannel().originalUriString();
+        return subscriptionUdpChannel().originalUriString();
     }
 
     /**
@@ -284,7 +285,8 @@ public class ReceiveChannelEndpoint extends ReceiveChannelEndpointHotFields
     }
 
     /**
-     * Increment the reference count for a given stream id.
+     * Called from the {@link io.aeron.driver.DriverConductor} to
+     * increment the reference count for a given stream id.
      *
      * @param streamId to increment the reference for.
      * @return current reference count after the increment.
@@ -295,7 +297,8 @@ public class ReceiveChannelEndpoint extends ReceiveChannelEndpointHotFields
     }
 
     /**
-     * Decrement the reference count for a given stream id.
+     * Called from the {@link io.aeron.driver.DriverConductor} to
+     * decrement the reference count for a given stream id.
      *
      * @param streamId to decrement the reference for.
      * @return current reference count after the decrement.
@@ -314,7 +317,8 @@ public class ReceiveChannelEndpoint extends ReceiveChannelEndpointHotFields
     }
 
     /**
-     * Increment the reference count for a given stream id and session id.
+     * Called from the {@link io.aeron.driver.DriverConductor} to
+     * increment the reference count for a given stream id and session id.
      *
      * @param streamId  to increment the reference for.
      * @param sessionId to increment the reference for.
@@ -326,7 +330,8 @@ public class ReceiveChannelEndpoint extends ReceiveChannelEndpointHotFields
     }
 
     /**
-     * Decrement the reference count for a given stream id and session id.
+     * Called from the {@link io.aeron.driver.DriverConductor} to
+     * decrement the reference count for a given stream id and session id.
      *
      * @param streamId  to increment the reference for.
      * @param sessionId to increment the reference for.
@@ -357,7 +362,8 @@ public class ReceiveChannelEndpoint extends ReceiveChannelEndpointHotFields
     }
 
     /**
-     * Should the channel be closed for cleanup.
+     * Called from the {@link io.aeron.driver.DriverConductor} to
+     * determine if the channel should be closed for cleanup.
      *
      * @return true if the channel should be closed for cleanup.
      */
@@ -365,7 +371,8 @@ public class ReceiveChannelEndpoint extends ReceiveChannelEndpointHotFields
     {
         return refCountByStreamIdMap.isEmpty() &&
             refCountByStreamIdAndSessionIdMap.isEmpty() &&
-            !statusIndicator.isClosed();
+            !statusIndicator.isClosed() &&
+            imageRefCount <= 0;
     }
 
     /**
@@ -464,7 +471,7 @@ public class ReceiveChannelEndpoint extends ReceiveChannelEndpointHotFields
     /**
      * Get the {@link UdpChannel} for the transport index.
      *
-     * @param transportIndex to the the {@link UdpChannel} for.
+     * @param transportIndex to the {@link UdpChannel}.
      * @return the {@link UdpChannel} for the transport index.
      */
     public UdpChannel udpChannel(final int transportIndex)
@@ -625,11 +632,11 @@ public class ReceiveChannelEndpoint extends ReceiveChannelEndpointHotFields
     /**
      * Callback to handle a received setup frame.
      *
-     * @param header          of the setup frame
-     * @param buffer          containing the setup frame.
-     * @param length          of the setup frame.
-     * @param srcAddress      the message came from.
-     * @param transportIndex  on which the message was received.
+     * @param header         of the setup frame.
+     * @param buffer         containing the setup frame.
+     * @param length         of the setup frame.
+     * @param srcAddress     the message came from.
+     * @param transportIndex on which the message was received.
      */
     public void onSetupMessage(
         final SetupFlyweight header,
@@ -645,11 +652,11 @@ public class ReceiveChannelEndpoint extends ReceiveChannelEndpointHotFields
     /**
      * Callback to handle a received RTT Measurement frame.
      *
-     * @param header          of the RTT Measurement frame
-     * @param buffer          containing the RTT Measurement frame.
-     * @param length          of the RTT Measurement frame.
-     * @param srcAddress      the message came from.
-     * @param transportIndex  on which the message was received.
+     * @param header         of the RTT Measurement frame.
+     * @param buffer         containing the RTT Measurement frame.
+     * @param length         of the RTT Measurement frame.
+     * @param srcAddress     the message came from.
+     * @param transportIndex on which the message was received.
      */
     public void onRttMeasurement(
         final RttMeasurementFlyweight header,
@@ -792,11 +799,11 @@ public class ReceiveChannelEndpoint extends ReceiveChannelEndpointHotFields
      * Send RTT Measurement frame to the sources.
      *
      * @param controlAddresses of the sources.
-     * @param sessionId       for the image.
-     * @param streamId        for the image.
-     * @param echoTimestampNs timestamp to echo in a reply.
-     * @param receptionDelta  time in nanoseconds between receiving original request and sending Reply RTT Measurement.
-     * @param isReply         true if a reply.
+     * @param sessionId        for the image.
+     * @param streamId         for the image.
+     * @param echoTimestampNs  timestamp to echo in a reply.
+     * @param receptionDelta   time in nanoseconds between receiving original request and sending Reply RTT Measurement.
+     * @param isReply          true if a reply.
      */
     public void sendRttMeasurement(
         final ImageConnection[] controlAddresses,
@@ -901,6 +908,24 @@ public class ReceiveChannelEndpoint extends ReceiveChannelEndpointHotFields
                 this,
                 currentControlAddress);
         }
+    }
+
+    /**
+     * Called from the {@link io.aeron.driver.DriverConductor} to
+     * increment image ref count for this channel endpoint.
+     */
+    public void incRefImages()
+    {
+        imageRefCount++;
+    }
+
+    /**
+     * Called from the {@link io.aeron.driver.DriverConductor} to
+     * decrement image ref count for this channel endpoint.
+     */
+    public void decRefImages()
+    {
+        --imageRefCount;
     }
 
     private void updateTimeOfLastActivityNs(final long nowNs, final int transportIndex)

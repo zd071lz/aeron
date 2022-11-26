@@ -57,7 +57,7 @@ public final class ReceiveDestinationTransport extends ReceiveDestinationTranspo
     private final AtomicCounter localSocketAddressIndicator;
 
     /**
-     * Construct a new transport for a receive destination.
+     * Construct transport for a receiving destination.
      *
      * @param udpChannel                  for the destination.
      * @param context                     for configuration.
@@ -112,6 +112,14 @@ public final class ReceiveDestinationTransport extends ReceiveDestinationTranspo
         LocalSocketAddressStatus.updateBindAddress(
             localSocketAddressIndicator, bindAddressAndPort(), context.countersMetaDataBuffer());
         localSocketAddressIndicator.setOrdered(ChannelEndpointStatus.ACTIVE);
+    }
+
+    /**
+     * Close the networking elements of the ReceiveChannelEndpoint, but leave other components (e.g. counters) in place.
+     */
+    public void closeTransport()
+    {
+        super.close();
     }
 
     /**

@@ -32,6 +32,8 @@ typedef enum aeron_publication_image_state_enum
 }
 aeron_publication_image_state_t;
 
+#define AERON_IMAGE_SM_EOS_MULTIPLE (5)
+
 typedef struct aeron_publication_image_connection_stct
 {
     struct sockaddr_storage resolved_control_address_for_implicit_unicast_channels;
@@ -71,6 +73,8 @@ typedef struct aeron_publication_image_stct
     connections;
 
     struct sockaddr_storage source_address;
+    size_t source_identity_length;
+    char source_identity[AERON_NETUTIL_FORMATTED_MAX_LENGTH];
     aeron_loss_detector_t loss_detector;
 
     aeron_mapped_raw_log_t mapped_raw_log;
@@ -122,15 +126,16 @@ typedef struct aeron_publication_image_stct
 
     int64_t time_of_last_packet_ns;
 
-    bool is_end_of_stream;
+    volatile bool is_end_of_stream;
+    volatile bool is_sending_eos_sm;
     volatile bool has_receiver_released;
 
-    int64_t *heartbeats_received_counter;
-    int64_t *flow_control_under_runs_counter;
-    int64_t *flow_control_over_runs_counter;
-    int64_t *status_messages_sent_counter;
-    int64_t *nak_messages_sent_counter;
-    int64_t *loss_gap_fills_counter;
+    volatile int64_t *heartbeats_received_counter;
+    volatile int64_t *flow_control_under_runs_counter;
+    volatile int64_t *flow_control_over_runs_counter;
+    volatile int64_t *status_messages_sent_counter;
+    volatile int64_t *nak_messages_sent_counter;
+    volatile int64_t *loss_gap_fills_counter;
 }
 aeron_publication_image_t;
 

@@ -40,9 +40,11 @@ import java.net.UnknownHostException;
 import java.nio.MappedByteBuffer;
 import java.nio.file.Path;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -53,13 +55,21 @@ public class SystemTestWatcher implements DriverOutputConsumer, AfterTestExecuti
 {
     private static final String CLUSTER_TERMINATION_EXCEPTION = ClusterTerminationException.class.getName();
     private static final String UNKNOWN_HOST_EXCEPTION = UnknownHostException.class.getName();
+    private static final String ATS_GCM_DECRYPT_ERROR =
+        "ats_gcm_decrypt final_ex: error:00000000:lib(0):func(0):reason(0)";
+    private static final String ATS_GCM_DECRYPT_ERROR_OTHER =
+        "ats_gcm_decrypt final_ex: error:00000000:lib(0)::reason(0)";
     public static final Predicate<String> UNKNOWN_HOST_FILTER =
         (s) -> s.contains(UNKNOWN_HOST_EXCEPTION) || s.contains("unknown host");
     public static final Predicate<String> WARNING_FILTER = (s) -> s.contains("WARN");
     public static final Predicate<String> CLUSTER_TERMINATION_FILTER =
         (s) -> s.contains(CLUSTER_TERMINATION_EXCEPTION);
+    public static final Predicate<String> ATS_GCM_DECRYPT_ERROR_FILTER =
+        (s) -> s.contains(ATS_GCM_DECRYPT_ERROR) || s.contains(ATS_GCM_DECRYPT_ERROR_OTHER);
     public static final Predicate<String> TEST_CLUSTER_DEFAULT_LOG_FILTER =
-        WARNING_FILTER.negate().and(CLUSTER_TERMINATION_FILTER.negate());
+        WARNING_FILTER.negate()
+        .and(CLUSTER_TERMINATION_FILTER.negate())
+        .and(ATS_GCM_DECRYPT_ERROR_FILTER.negate());
 
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ");
 
@@ -67,13 +77,18 @@ public class SystemTestWatcher implements DriverOutputConsumer, AfterTestExecuti
 
     private Predicate<String> logFilter = TEST_CLUSTER_DEFAULT_LOG_FILTER;
     private DataCollector dataCollector = new DataCollector();
-    private AutoCloseable closeable = () -> {};
+    private ArrayList<AutoCloseable> closeables = new ArrayList<>();
+    private boolean skipDeleteOnFailure = false;
 
     public SystemTestWatcher cluster(final TestCluster testCluster)
     {
         this.dataCollector = testCluster.dataCollector();
-        closeable = testCluster;
+        return addClosable(testCluster);
+    }
 
+    public SystemTestWatcher addClosable(final AutoCloseable closeable)
+    {
+        closeables.add(Objects.requireNonNull(closeable));
         return this;
     }
 
@@ -113,35 +128,47 @@ public class SystemTestWatcher implements DriverOutputConsumer, AfterTestExecuti
         this.logFilter = (s) -> true;
     }
 
+    public void skipDeleteOnFailure(final boolean skipDeleteOnFailure)
+    {
+        this.skipDeleteOnFailure = skipDeleteOnFailure;
+    }
+
     public void afterTestExecution(final ExtensionContext context)
     {
         mediaDriverTestUtil.afterTestExecution(context);
-        assertEquals(0, errorCount(), "Errors observed in " + context.getDisplayName());
+        if (null != dataCollector)
+        {
+            final MutableInteger count = new MutableInteger();
+            final StringBuilder errors = new StringBuilder();
+            filterErrors(count, errors);
+            assertEquals(0, count.get(), () -> "Errors observed in " + context.getDisplayName() + ":\n" + errors);
+        }
     }
 
     public void afterEach(final ExtensionContext context)
     {
         final boolean interrupted = Thread.interrupted();
+        Optional<Throwable> failureCause = Optional.empty();
         try
         {
-            final Optional<Throwable> executionException = context.getExecutionException();
-            if (executionException.filter(t -> !(t instanceof TestAbortedException)).isPresent())
+            failureCause = getFailureExceptionIgnoringAbort(context);
+            if (failureCause.isPresent())
             {
                 final String test = context.getTestClass().map(Class::getName).orElse("unknown") + "-" +
                     context.getTestMethod().map(Method::getName).orElse("unknown");
-                System.out.println("*** " + test + " failed, cause: " + executionException.get());
+                System.out.println("*** " + test + " failed, cause: " + failureCause.get());
                 reportAndTerminate(test);
                 mediaDriverTestUtil.testFailed();
             }
             else
             {
-                CloseHelper.close(closeable);
+                CloseHelper.closeAll(closeables);
                 mediaDriverTestUtil.testSuccessful();
             }
         }
         finally
         {
-            deleteAllLocations();
+            deleteAllLocations(failureCause);
             if (interrupted)
             {
                 Thread.currentThread().interrupt();
@@ -149,35 +176,21 @@ public class SystemTestWatcher implements DriverOutputConsumer, AfterTestExecuti
         }
     }
 
-    public int errorCount()
+    private Optional<Throwable> getFailureExceptionIgnoringAbort(final ExtensionContext context)
     {
-        if (null != dataCollector)
-        {
-            return countErrors(
-                dataCollector.cncFiles(),
-                dataCollector.archiveMarkFiles(),
-                dataCollector.consensusModuleMarkFiles(),
-                dataCollector.clusterServiceMarkFiles(),
-                logFilter);
-        }
-
-        return 0;
+        final Optional<Throwable> executionException = context.getExecutionException();
+        return executionException.filter(t -> !(t instanceof TestAbortedException));
     }
 
-    private int countErrors(
-        final List<Path> cncPaths,
-        final List<Path> archiveMarkFiles,
-        final List<Path> consensusModuleMarkFiles,
-        final List<Path> clusterServiceMarkFiles,
-        final Predicate<String> filter)
+    private void filterErrors(final MutableInteger count, final StringBuilder errors)
     {
         final boolean isInterrupted = Thread.interrupted();
         try
         {
-            return countErrors(cncPaths, filter, CommonContext::errorLogBuffer) +
-                countArchiveMarkFileErrors(archiveMarkFiles, filter) +
-                countClusterMarkFileErrors(consensusModuleMarkFiles, filter) +
-                countClusterMarkFileErrors(clusterServiceMarkFiles, filter);
+            filterCncFileErrors(dataCollector.cncFiles(), logFilter, CommonContext::errorLogBuffer, count, errors);
+            filterArchiveMarkFileErrors(dataCollector.archiveMarkFiles(), logFilter, count, errors);
+            filterClusterMarkFileErrors(dataCollector.consensusModuleMarkFiles(), logFilter, count, errors);
+            filterClusterMarkFileErrors(dataCollector.clusterServiceMarkFiles(), logFilter, count, errors);
         }
         finally
         {
@@ -188,13 +201,13 @@ public class SystemTestWatcher implements DriverOutputConsumer, AfterTestExecuti
         }
     }
 
-    private int countErrors(
+    private static void filterCncFileErrors(
         final List<Path> paths,
         final Predicate<String> filter,
-        final Function<MappedByteBuffer, AtomicBuffer> toErrorBuffer)
+        final Function<MappedByteBuffer, AtomicBuffer> toErrorBuffer,
+        final MutableInteger count,
+        final StringBuilder errors)
     {
-        final MutableInteger errorCount = new MutableInteger();
-
         for (final Path path : paths)
         {
             final File file = path.toFile();
@@ -208,7 +221,8 @@ public class SystemTestWatcher implements DriverOutputConsumer, AfterTestExecuti
                     {
                         if (filter.test(encodedException))
                         {
-                            errorCount.set(errorCount.get() + observationCount);
+                            count.set(count.get() + observationCount);
+                            appendError(errors, path, encodedException);
                         }
                     });
             }
@@ -217,16 +231,14 @@ public class SystemTestWatcher implements DriverOutputConsumer, AfterTestExecuti
                 IoUtil.unmap(mmap);
             }
         }
-
-        return errorCount.get();
     }
 
-    private int countClusterMarkFileErrors(
+    private static void filterClusterMarkFileErrors(
         final List<Path> paths,
-        final Predicate<String> filter)
+        final Predicate<String> filter,
+        final MutableInteger count,
+        final StringBuilder errors)
     {
-        final MutableInteger errorCount = new MutableInteger();
-
         for (final Path path : paths)
         {
             try (ClusterMarkFile clusterMarkFile = openClusterMarkFile(path))
@@ -238,21 +250,20 @@ public class SystemTestWatcher implements DriverOutputConsumer, AfterTestExecuti
                     {
                         if (filter.test(encodedException))
                         {
-                            errorCount.set(errorCount.get() + observationCount);
+                            count.set(count.get() + observationCount);
+                            appendError(errors, path, encodedException);
                         }
                     });
             }
         }
-
-        return errorCount.get();
     }
 
-    private int countArchiveMarkFileErrors(
+    private static void filterArchiveMarkFileErrors(
         final List<Path> paths,
-        final Predicate<String> filter)
+        final Predicate<String> filter,
+        final MutableInteger count,
+        final StringBuilder errors)
     {
-        final MutableInteger errorCount = new MutableInteger();
-
         for (final Path path : paths)
         {
             try (ArchiveMarkFile archive = openArchiveMarkFile(path))
@@ -264,13 +275,29 @@ public class SystemTestWatcher implements DriverOutputConsumer, AfterTestExecuti
                     {
                         if (filter.test(encodedException))
                         {
-                            errorCount.set(errorCount.get() + observationCount);
+                            count.set(count.get() + observationCount);
+                            appendError(errors, path, encodedException);
                         }
                     });
             }
         }
+    }
 
-        return errorCount.get();
+    private static void appendError(final StringBuilder errors, final Path path, final String encodedException)
+    {
+        final String errorMessage;
+        final int lineFeedIndex = encodedException.indexOf('\n');
+        if (lineFeedIndex > 0)
+        {
+            final int endOfMessageIndex =
+                '\r' != encodedException.charAt(lineFeedIndex - 1) ? lineFeedIndex : lineFeedIndex - 1;
+            errorMessage = encodedException.substring(0, endOfMessageIndex);
+        }
+        else
+        {
+            errorMessage = encodedException;
+        }
+        errors.append(path).append(": ").append(errorMessage).append('\n');
     }
 
     private static ClusterMarkFile openClusterMarkFile(final Path path)
@@ -321,7 +348,7 @@ public class SystemTestWatcher implements DriverOutputConsumer, AfterTestExecuti
 
             try
             {
-                CloseHelper.close(closeable);
+                CloseHelper.closeAll(closeables);
             }
             catch (final Exception t)
             {
@@ -410,9 +437,14 @@ public class SystemTestWatcher implements DriverOutputConsumer, AfterTestExecuti
         }
     }
 
-    private void deleteAllLocations()
+    private void deleteAllLocations(final Optional<Throwable> failureCause)
     {
-        for (final Path path : dataCollector.allLocations())
+        if (failureCause.isPresent() && skipDeleteOnFailure)
+        {
+            return;
+        }
+
+        for (final Path path : dataCollector.cleanupLocations())
         {
             IoUtil.delete(path.toFile(), true);
         }

@@ -48,7 +48,7 @@ int aeron_ipc_publication_create(
     if (context->perform_storage_checks && context->usable_fs_space_func(context->aeron_dir) < log_length)
     {
         AERON_SET_ERR(
-            ENOSPC,
+            -AERON_ERROR_CODE_STORAGE_SPACE,
             "Insufficient usable storage for new log of length=%" PRId64 " in %s", log_length, context->aeron_dir);
         return -1;
     }
@@ -485,9 +485,9 @@ void aeron_ipc_publication_check_for_blocked_publisher(
     }
 }
 
-extern void aeron_ipc_publication_add_subscriber_hook(void *clientd, int64_t *value_addr);
+extern void aeron_ipc_publication_add_subscriber_hook(void *clientd, volatile int64_t *value_addr);
 
-extern void aeron_ipc_publication_remove_subscriber_hook(void *clientd, int64_t *value_addr);
+extern void aeron_ipc_publication_remove_subscriber_hook(void *clientd, volatile int64_t *value_addr);
 
 extern bool aeron_ipc_publication_is_possibly_blocked(
     aeron_ipc_publication_t *publication, int64_t producer_position, int64_t consumer_position);

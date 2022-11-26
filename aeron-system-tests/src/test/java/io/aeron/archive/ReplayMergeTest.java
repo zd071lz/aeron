@@ -23,10 +23,7 @@ import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.protocol.DataHeaderFlyweight;
-import io.aeron.test.InterruptAfter;
-import io.aeron.test.InterruptingTestCallback;
-import io.aeron.test.SystemTestWatcher;
-import io.aeron.test.Tests;
+import io.aeron.test.*;
 import io.aeron.test.driver.TestMediaDriver;
 import org.agrona.CloseHelper;
 import org.agrona.ExpandableArrayBuffer;
@@ -49,13 +46,12 @@ import static io.aeron.archive.codecs.SourceLocation.REMOTE;
 import static org.junit.jupiter.api.Assertions.*;
 
 @ExtendWith(InterruptingTestCallback.class)
-public class ReplayMergeTest
+class ReplayMergeTest
 {
     private static final String MESSAGE_PREFIX = "Message-Prefix-";
     private static final int MIN_MESSAGES_PER_TERM =
         TERM_LENGTH / (MESSAGE_PREFIX.length() + DataHeaderFlyweight.HEADER_LENGTH);
 
-    private static final int PUBLICATION_TAG = 2;
     private static final int STREAM_ID = 1033;
 
     private static final String CONTROL_ENDPOINT = "localhost:23265";
@@ -70,7 +66,6 @@ public class ReplayMergeTest
 
     private final String publicationChannel = new ChannelUriStringBuilder()
         .media(CommonContext.UDP_MEDIA)
-        .tags("1," + PUBLICATION_TAG)
         .controlEndpoint(CONTROL_ENDPOINT)
         .controlMode(CommonContext.MDC_CONTROL_MODE_DYNAMIC)
         .termLength(TERM_LENGTH)
@@ -86,12 +81,6 @@ public class ReplayMergeTest
     private final String replayDestination = new ChannelUriStringBuilder()
         .media(CommonContext.UDP_MEDIA)
         .endpoint(REPLAY_ENDPOINT)
-        .build();
-
-    private final String replayChannel = new ChannelUriStringBuilder()
-        .media(CommonContext.UDP_MEDIA)
-        .isSessionIdTagged(true)
-        .sessionId(PUBLICATION_TAG)
         .build();
 
     private final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
@@ -117,10 +106,10 @@ public class ReplayMergeTest
         });
 
     @RegisterExtension
-    public final SystemTestWatcher systemTestWatcher = new SystemTestWatcher();
+    final SystemTestWatcher systemTestWatcher = new SystemTestWatcher();
 
     @BeforeEach
-    public void before()
+    void before()
     {
         final File archiveDir = new File(SystemUtil.tmpDirName(), "archive");
 
@@ -135,7 +124,7 @@ public class ReplayMergeTest
             systemTestWatcher);
 
         archive = Archive.launch(
-            new Archive.Context()
+            TestContexts.localhostArchive()
                 .catalogCapacity(CATALOG_CAPACITY)
                 .aeronDirectoryName(mediaDriverContext.aeronDirectoryName())
                 .archiveDir(archiveDir)
@@ -160,7 +149,7 @@ public class ReplayMergeTest
     }
 
     @AfterEach
-    public void after()
+    void after()
     {
         if (receivedMessageCount.get() != MIN_MESSAGES_PER_TERM * 6L)
         {
@@ -174,7 +163,7 @@ public class ReplayMergeTest
 
     @Test
     @InterruptAfter(30)
-    public void shouldMergeFromReplayToLive()
+    void shouldMergeFromReplayToLive()
     {
         try (Publication publication = aeron.addPublication(publicationChannel, STREAM_ID))
         {
@@ -194,11 +183,11 @@ public class ReplayMergeTest
 
             aeronArchive.startRecording(recordingChannel, STREAM_ID, REMOTE, true);
             final CountersReader counters = aeron.countersReader();
-            final int recordingCounterId = awaitRecordingCounterId(counters, publication.sessionId());
+            final int recordingCounterId = Tests.awaitRecordingCounterId(counters, publication.sessionId());
             final long recordingId = RecordingPos.getRecordingId(counters, recordingCounterId);
 
             publishMessages(publication);
-            awaitPosition(counters, recordingCounterId, publication.position());
+            Tests.awaitPosition(counters, recordingCounterId, publication.position());
             int attempt = 1;
 
             while (!attemptReplayMerge(
@@ -221,6 +210,11 @@ public class ReplayMergeTest
         final Publication publication,
         final String subscriptionChannel)
     {
+        final String replayChannel = new ChannelUriStringBuilder()
+            .media(CommonContext.UDP_MEDIA)
+            .sessionId(publication.sessionId())
+            .build();
+
         try (Subscription subscription = aeron.addSubscription(subscriptionChannel, STREAM_ID);
             ReplayMerge replayMerge = new ReplayMerge(
                 subscription,

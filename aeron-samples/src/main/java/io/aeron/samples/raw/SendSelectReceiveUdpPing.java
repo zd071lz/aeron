@@ -17,6 +17,9 @@ package io.aeron.samples.raw;
 
 import io.aeron.driver.Configuration;
 import org.HdrHistogram.Histogram;
+import org.agrona.SystemUtil;
+import org.agrona.collections.MutableLong;
+import org.agrona.concurrent.HighResolutionTimer;
 import org.agrona.concurrent.SigInt;
 import org.agrona.hints.ThreadHints;
 
@@ -43,10 +46,6 @@ import static org.agrona.BitUtil.SIZE_OF_LONG;
  */
 public class SendSelectReceiveUdpPing
 {
-    private static final InetSocketAddress SEND_ADDRESS = new InetSocketAddress("localhost", Common.PING_PORT);
-
-    private int sequenceNumber;
-
     /**
      * Main method for launching the process.
      *
@@ -55,11 +54,11 @@ public class SendSelectReceiveUdpPing
      */
     public static void main(final String[] args) throws IOException
     {
-        new SendSelectReceiveUdpPing().run();
-    }
+        if (SystemUtil.isWindows())
+        {
+            HighResolutionTimer.enable();
+        }
 
-    private void run() throws IOException
-    {
         final Histogram histogram = new Histogram(TimeUnit.SECONDS.toNanos(10), 3);
         final ByteBuffer buffer = ByteBuffer.allocateDirect(Configuration.MTU_LENGTH_DEFAULT);
 
@@ -67,10 +66,12 @@ public class SendSelectReceiveUdpPing
         Common.init(receiveChannel);
         receiveChannel.bind(new InetSocketAddress("localhost", Common.PONG_PORT));
 
+        final InetSocketAddress sendAddress = new InetSocketAddress("localhost", Common.PING_PORT);
         final DatagramChannel sendChannel = DatagramChannel.open();
         Common.init(sendChannel);
 
         final Selector selector = Selector.open();
+        final MutableLong sequence = new MutableLong();
 
         final IntSupplier handler =
             () ->
@@ -81,15 +82,14 @@ public class SendSelectReceiveUdpPing
                     receiveChannel.receive(buffer);
 
                     final long receivedSequenceNumber = buffer.getLong(0);
-                    final long timestampNs = buffer.getLong(SIZE_OF_LONG);
+                    final long receivedTimestampNs = buffer.getLong(SIZE_OF_LONG);
 
-                    if (receivedSequenceNumber != sequenceNumber)
+                    if (receivedSequenceNumber != sequence.get())
                     {
-                        throw new IllegalStateException(
-                            "data Loss:" + sequenceNumber + " to " + receivedSequenceNumber);
+                        throw new IllegalStateException("Data Loss: " + sequence + " to " + receivedSequenceNumber);
                     }
 
-                    final long durationNs = System.nanoTime() - timestampNs;
+                    final long durationNs = System.nanoTime() - receivedTimestampNs;
                     histogram.recordValue(durationNs);
                 }
                 catch (final IOException ex)
@@ -107,29 +107,32 @@ public class SendSelectReceiveUdpPing
 
         while (running.get())
         {
-            measureRoundTrip(histogram, SEND_ADDRESS, buffer, sendChannel, selector, running);
+            measureRoundTrip(histogram, sendAddress, buffer, sendChannel, selector, sequence, running);
 
             histogram.reset();
             System.gc();
-            LockSupport.parkNanos(1000 * 1000 * 1000);
+            LockSupport.parkNanos(1_000_000_000L);
         }
     }
 
-    private void measureRoundTrip(
+    private static void measureRoundTrip(
         final Histogram histogram,
         final InetSocketAddress sendAddress,
         final ByteBuffer buffer,
         final DatagramChannel sendChannel,
         final Selector selector,
+        final MutableLong sequence,
         final AtomicBoolean running)
         throws IOException
     {
-        for (sequenceNumber = 0; sequenceNumber < Common.NUM_MESSAGES; sequenceNumber++)
+        for (int i = 0; i < Common.NUM_MESSAGES; i++)
         {
+            sequence.set(i);
+
             final long timestamp = System.nanoTime();
 
             buffer.clear();
-            buffer.putLong(sequenceNumber);
+            buffer.putLong(i);
             buffer.putLong(timestamp);
             buffer.flip();
 
@@ -141,6 +144,7 @@ public class SendSelectReceiveUdpPing
                 {
                     return;
                 }
+
                 ThreadHints.onSpinWait();
             }
 
